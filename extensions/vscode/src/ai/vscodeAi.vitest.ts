@@ -17,6 +17,12 @@ vi.mock("vscode", () => {
       public content: unknown[],
     ) {}
   }
+  class LanguageModelDataPart {
+    constructor(
+      public data: Uint8Array,
+      public mimeType: string,
+    ) {}
+  }
   class McpStdioServerDefinition {
     cwd?: unknown;
     constructor(
@@ -50,6 +56,7 @@ vi.mock("vscode", () => {
     LanguageModelTextPart,
     LanguageModelToolCallPart,
     LanguageModelToolResultPart,
+    LanguageModelDataPart,
     McpStdioServerDefinition,
     McpHttpServerDefinition,
     EventEmitter,
@@ -111,6 +118,47 @@ describe("toChatMessages", () => {
       { role: "tool", toolCallId: "c1", content: "diff --git a b" },
     ]);
   });
+
+  it("places tool results before user text from the same message", () => {
+    const out = toChatMessages([
+      msg(2, [
+        new vscode.LanguageModelToolCallPart("c1", "run_in_terminal", {
+          command: "ls",
+        }),
+      ]),
+      msg(1, [
+        new vscode.LanguageModelTextPart("also, the user typed this"),
+        new vscode.LanguageModelToolResultPart("c1", [
+          new vscode.LanguageModelTextPart("file.ts"),
+        ]),
+      ]),
+    ]);
+    expect(out.map((m) => m.role)).toEqual(["assistant", "tool", "user"]);
+    expect(out[1]).toMatchObject({ role: "tool", content: "file.ts" });
+    expect(out[2]).toMatchObject({
+      role: "user",
+      content: "also, the user typed this",
+    });
+  });
+
+  it("describes binary tool output instead of dumping every byte", () => {
+    const out = toChatMessages([
+      msg(1, [
+        new vscode.LanguageModelToolResultPart("c1", [
+          new (vscode as any).LanguageModelDataPart(
+            new Uint8Array(50_000),
+            "image/png",
+          ),
+        ]),
+      ]),
+    ]);
+    expect(out).toEqual([
+      { role: "tool", toolCallId: "c1", content: "[image/png, 49 KB]" },
+    ]);
+    expect(
+      String(out[0] && "content" in out[0] ? out[0].content : ""),
+    ).not.toContain('"0":');
+  });
 });
 
 describe("ToolCallCollector", () => {
@@ -119,16 +167,26 @@ describe("ToolCallCollector", () => {
     c.add({ id: "a", function: { name: "read_file", arguments: '{"pa' } });
     c.add({ function: { arguments: 'th":"x.ts"}' } });
     c.add({ id: "b", function: { name: "ls", arguments: "" } });
-    expect(c.finish()).toEqual([
-      { id: "a", name: "read_file", input: { path: "x.ts" } },
-      { id: "b", name: "ls", input: {} },
-    ]);
+    expect(c.finish()).toEqual({
+      calls: [
+        { id: "a", name: "read_file", input: { path: "x.ts" } },
+        { id: "b", name: "ls", input: {} },
+      ],
+      rejected: [],
+    });
   });
 
-  it("gives up on unparseable arguments with an empty object", () => {
+  it("rejects tool calls whose arguments do not parse", () => {
     const c = new ToolCallCollector();
-    c.add({ id: "a", function: { name: "x", arguments: "{oops" } });
-    expect(c.finish()).toEqual([{ id: "a", name: "x", input: {} }]);
+    c.add({
+      id: "a",
+      function: { name: "run_in_terminal", arguments: '{"command":' },
+    });
+    c.add({ id: "b", function: { name: "ls", arguments: "{}" } });
+    expect(c.finish()).toEqual({
+      calls: [{ id: "b", name: "ls", input: {} }],
+      rejected: ["run_in_terminal"],
+    });
   });
 });
 
@@ -145,6 +203,79 @@ const llm = (over: Record<string, unknown> = {}) =>
   }) as any;
 
 describe("language model provider", () => {
+  it("does not run tool calls collected before cancellation", async () => {
+    let cancelled = false;
+    const model = llm({
+      title: "t",
+      streamChat: async function* () {
+        yield {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "a",
+              function: {
+                name: "run_in_terminal",
+                arguments: '{"command":"ls"}',
+              },
+            },
+          ],
+        };
+        cancelled = true;
+      },
+    });
+    const provider = new ContinuedLanguageModelChatProvider();
+    provider.update([model]);
+    const reported: unknown[] = [];
+    await provider.provideLanguageModelChatResponse(
+      modelInfo(model, "t"),
+      [],
+      {} as any,
+      { report: (part: unknown) => reported.push(part) },
+      {
+        get isCancellationRequested() {
+          return cancelled;
+        },
+        onCancellationRequested: () => ({ dispose() {} }),
+      } as any,
+    );
+    expect(
+      reported.some((part) => part instanceof vscode.LanguageModelToolCallPart),
+    ).toBe(false);
+  });
+
+  it("fails a turn whose tool call arguments were cut off", async () => {
+    const model = llm({
+      title: "t",
+      streamChat: async function* () {
+        yield {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "a",
+              function: { name: "run_in_terminal", arguments: '{"command":' },
+            },
+          ],
+        };
+      },
+    });
+    const provider = new ContinuedLanguageModelChatProvider();
+    provider.update([model]);
+    await expect(
+      provider.provideLanguageModelChatResponse(
+        modelInfo(model, "t"),
+        [],
+        {} as any,
+        { report: () => {} },
+        {
+          isCancellationRequested: false,
+          onCancellationRequested: () => ({ dispose() {} }),
+        } as any,
+      ),
+    ).rejects.toThrow(/incomplete/);
+  });
+
   it("describes models from the config without keys", () => {
     const info = modelInfo(llm({ apiKey: "sk-secret" }), "Claude Sonnet");
     expect(info).toMatchObject({

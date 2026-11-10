@@ -5,6 +5,12 @@ import * as fs from "node:fs";
 import net from "node:net";
 import { v4 as uuidv4 } from "uuid";
 
+import {
+  createIpcFrameBuffer,
+  pushIpcChunk,
+  type IpcFrameBuffer,
+} from "./ipcFraming";
+
 class IPCMessengerBase<
   ToProtocol extends IProtocol,
   FromProtocol extends IProtocol,
@@ -92,23 +98,12 @@ class IPCMessengerBase<
     }
   }
 
-  private _unfinishedLine: string | undefined = undefined;
+  private _frames: IpcFrameBuffer = createIpcFrameBuffer();
 
   protected _handleData(data: Buffer) {
-    const d = data.toString();
-    const lines = d.split(/\r\n/).filter((line) => line.trim() !== "");
-    if (lines.length === 0) {
-      return;
+    for (const line of pushIpcChunk(this._frames, data)) {
+      this._handleLine(line);
     }
-
-    if (this._unfinishedLine) {
-      lines[0] = this._unfinishedLine + lines[0];
-      this._unfinishedLine = undefined;
-    }
-    if (!d.endsWith("\r\n")) {
-      this._unfinishedLine = lines.pop();
-    }
-    lines.forEach((line) => this._handleLine(line));
   }
 
   private _onErrorHandlers: ((message: Message, error: Error) => void)[] = [];

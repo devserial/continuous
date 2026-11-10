@@ -247,6 +247,44 @@ describe("handleToolCallBuffer", () => {
     expect(state.done).toBe(true);
   });
 
+  it("keeps file text that contains endarg and quotes the argument name", () => {
+    state.currentLineIndex = 2;
+    state.isWithinArgStart = true;
+    state.lineChunks[2] = ['BEGIN_ARG: say "hi"'];
+
+    const nameDelta = handleToolCallBuffer("\n", state);
+    expect(nameDelta?.function?.arguments).toBe('{"say \\"hi\\"":');
+
+    for (const line of [
+      "function main() {",
+      "  const backendArgs = parse();",
+      "  return appendArgs;",
+      "}",
+    ]) {
+      handleToolCallBuffer(line, state);
+      handleToolCallBuffer("\n", state);
+    }
+    expect(state.currentArgName).toBe('say "hi"');
+
+    handleToolCallBuffer("END_ARG", state);
+    const endDelta = handleToolCallBuffer("\n", state);
+    expect(endDelta?.function?.arguments).toContain(
+      "const backendArgs = parse();",
+    );
+    expect(endDelta?.function?.arguments).toContain("return appendArgs;");
+    expect(state.currentArgName).toBeUndefined();
+  });
+
+  it("still ends an argument on a line that is only the tag", () => {
+    state.currentLineIndex = 3;
+    state.currentArgName = "test_arg";
+    state.currentArgChunks = ["kept\n"];
+
+    handleToolCallBuffer("  end_arg  ", state);
+    const endDelta = handleToolCallBuffer("\n", state);
+    expect(endDelta?.function?.arguments).toBe('"kept"');
+  });
+
   it("handles JSON array args", () => {
     state.currentLineIndex = 3;
     state.currentArgName = "test_arg";

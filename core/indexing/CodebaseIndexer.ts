@@ -752,11 +752,21 @@ export class CodebaseIndexer {
       }
     } catch (e: any) {
       console.log(`Failed refreshing codebase index directories: ${e}`);
-      await this.handleIndexingError(e);
+      try {
+        await this.handleIndexingError(e);
+      } catch (handleError) {
+        console.log(`Failed to report indexing error: ${handleError}`);
+      }
+    } finally {
+      // Always release the lock. A throw while reporting the error used to
+      // leave the timestamp refresh running, so other windows could not index.
+      clearInterval(indexLockTimestampUpdateInterval);
+      try {
+        await IndexLock.unlock();
+      } catch (unlockError) {
+        console.log(`Failed to unlock indexing lock: ${unlockError}`);
+      }
     }
-
-    clearInterval(indexLockTimestampUpdateInterval); // interval will also be cleared when window closes before indexing is finished
-    await IndexLock.unlock();
 
     // Directly refresh submenu items
     if (this.messenger) {

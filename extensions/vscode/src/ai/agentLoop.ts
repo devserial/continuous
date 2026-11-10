@@ -59,7 +59,15 @@ export async function runAgentTurn(
       for (const d of chunk.toolCalls ?? []) calls.add(d);
     }
     shown += text;
-    const toolCalls = calls.finish();
+    const { calls: toolCalls, rejected } = calls.finish();
+    if (io.isCancelled()) return shown;
+    // A cut-off tool call used to run with empty arguments. Fail the turn
+    // instead of invoking it.
+    if (rejected.length) {
+      throw new Error(
+        `Tool call arguments were incomplete and were not run: ${rejected.join(", ")}`,
+      );
+    }
     messages.push({
       role: "assistant",
       content: text,
@@ -73,7 +81,7 @@ export async function runAgentTurn(
           }
         : {}),
     });
-    if (toolCalls.length === 0 || io.isCancelled()) return shown;
+    if (toolCalls.length === 0) return shown;
 
     for (const call of toolCalls) {
       io.progress(`Running ${call.name}`);

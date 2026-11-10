@@ -117,6 +117,10 @@ class NextEditWindowManager(private val project: Project) {
             return false
         }
 
+        if (editableRegionStartLine < 0 || editableRegionStartLine >= editor.document.lineCount) {
+            return false
+        }
+
         val startOffset = editor.document.getLineStartOffset(editableRegionStartLine)
         val endOffset = editor.document.getLineEndOffset(editableRegionStartLine)
         val line = editor.document.getText(TextRange(startOffset, endOffset))
@@ -535,56 +539,59 @@ class NextEditWindowManager(private val project: Project) {
         // Clear any existing decorations first
         clearAllDeletionDecorations()
 
-        val diffChars = calculateCharDiff(oldCode, newCode)
+        val document = editor.document
+        val stamp = document.modificationStamp
+        if (startLine < 0) return
 
-        // Group consecutive deletion characters to create continuous ranges
-        val deletionRanges = mutableListOf<Pair<Int, Int>>()
-        var currentRangeStart: Int? = null
+        val spans = deletionSpans(calculateCharDiff(oldCode, newCode))
+        val highlighters = mutableListOf<RangeHighlighter>()
 
-        diffChars.filter { it.type == "old" }.forEach { diff ->
-            val lineStartOffset = editor.document.getLineStartOffset(startLine + diff.oldLineIndex!!)
-            val charOffset = lineStartOffset + diff.oldCharIndexInLine!!
-
-            if (currentRangeStart == null) {
-                currentRangeStart = charOffset
+        for (span in spans) {
+            // The document may have been edited since the suggestion was built.
+            if (document.modificationStamp != stamp) {
+                highlighters.forEach { it.dispose() }
+                return
             }
-
-            // Check if this is consecutive with the previous character
-            val nextDiff = diffChars.getOrNull(diffChars.indexOf(diff) + 1)
-            if (nextDiff?.type != "old" ||
-                nextDiff.oldLineIndex != diff.oldLineIndex ||
-                nextDiff.oldCharIndexInLine != diff.oldCharIndexInLine!! + diff.char.length
+            val line = startLine + span.line
+            if (line < 0 || line >= document.lineCount) continue
+            val lineStartOffset = document.getLineStartOffset(line)
+            val lineEndOffset = document.getLineEndOffset(line)
+            val startOffset = lineStartOffset + span.startChar
+            val endOffset = lineStartOffset + span.endChar
+            if (
+                startOffset < lineStartOffset ||
+                endOffset > lineEndOffset ||
+                startOffset > endOffset ||
+                endOffset > document.textLength
             ) {
-                // End of consecutive deletions
-                deletionRanges.add(currentRangeStart!! to (charOffset + diff.char.length))
-                currentRangeStart = null
+                continue
             }
-        }
 
-        // Create highlighters for each deletion range
-        deletionHighlighters = deletionRanges.map { (startOffset, endOffset) ->
-            editor.markupModel.addRangeHighlighter(
-                startOffset,
-                endOffset,
-                HighlighterLayer.LAST + 1, // higher layer to ensure visibility
-                TextAttributes().apply {
-                    backgroundColor = JBColor(
-                        Color(0xFFEAEA),  // light theme: more visible light red
-                        Color(0x4D1B1B)   // dark theme: dark red
-                    )
-                    foregroundColor = null
-                    effectType = EffectType.STRIKEOUT
-                    effectColor = JBColor(
-                        Color(0xDC3545),
-                        Color(0xDC3545)
-                    )
-                },
-                HighlighterTargetArea.EXACT_RANGE
-            ).also { highlighter ->
-                highlighter.isGreedyToLeft = false
-                highlighter.isGreedyToRight = false
-            }
+            highlighters.add(
+                editor.markupModel.addRangeHighlighter(
+                    startOffset,
+                    endOffset,
+                    HighlighterLayer.LAST + 1, // higher layer to ensure visibility
+                    TextAttributes().apply {
+                        backgroundColor = JBColor(
+                            Color(0xFFEAEA),  // light theme: more visible light red
+                            Color(0x4D1B1B)   // dark theme: dark red
+                        )
+                        foregroundColor = null
+                        effectType = EffectType.STRIKEOUT
+                        effectColor = JBColor(
+                            Color(0xDC3545),
+                            Color(0xDC3545)
+                        )
+                    },
+                    HighlighterTargetArea.EXACT_RANGE
+                ).also { highlighter ->
+                    highlighter.isGreedyToLeft = false
+                    highlighter.isGreedyToRight = false
+                }
+            )
         }
+        deletionHighlighters = highlighters
     }
 
     private fun calculateCharDiff(oldCode: String, newCode: String): List<DiffChar> {
@@ -861,6 +868,46 @@ class NextEditWindowManager(private val project: Project) {
 enum class PopupAction {
     ACCEPT,
     REJECT
+}
+
+/** One run of deleted characters on a single line, in character offsets. */
+internal data class DeletionSpan(val line: Int, val startChar: Int, val endChar: Int)
+
+/**
+ * Group consecutive deleted characters by walking the diff once.
+ * Looking each character up with indexOf is quadratic and, for equal
+ * data-class values, can attach a deletion to the wrong neighbor.
+ */
+internal fun deletionSpans(diffChars: List<DiffChar>): List<DeletionSpan> {
+    val spans = mutableListOf<DeletionSpan>()
+    var index = 0
+    while (index < diffChars.size) {
+        val diff = diffChars[index]
+        val line = diff.oldLineIndex
+        val charIndex = diff.oldCharIndexInLine
+        if (diff.type != "old" || line == null || charIndex == null) {
+            index++
+            continue
+        }
+        var endChar = charIndex + diff.char.length
+        var next = index + 1
+        while (next < diffChars.size) {
+            val neighbor = diffChars[next]
+            if (
+                neighbor.type == "old" &&
+                neighbor.oldLineIndex == line &&
+                neighbor.oldCharIndexInLine == endChar
+            ) {
+                endChar += neighbor.char.length
+                next++
+            } else {
+                break
+            }
+        }
+        spans.add(DeletionSpan(line, charIndex, endChar))
+        index = next
+    }
+    return spans
 }
 
 data class DiffChar(

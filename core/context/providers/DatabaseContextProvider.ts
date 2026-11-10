@@ -15,6 +15,49 @@ async function getDatabaseAdapter(connectionType: string, connection: any) {
   return getDatabaseAdapter(connectionType, connection);
 }
 
+function connectionKey(connection: any): string {
+  let settings = "";
+  try {
+    settings = JSON.stringify(connection?.connection ?? {});
+  } catch {
+    settings = "";
+  }
+  return `${connection?.name ?? ""}:${connection?.connection_type ?? ""}:${settings}`;
+}
+
+/** Split `connection.table` on the first dot so a table name may contain dots. */
+export function splitDatabaseQuery(query: string): {
+  connectionName: string;
+  table: string | undefined;
+} {
+  const dot = query.indexOf(".");
+  if (dot === -1) {
+    return { connectionName: query, table: undefined };
+  }
+  return {
+    connectionName: query.slice(0, dot),
+    table: query.slice(dot + 1),
+  };
+}
+
+async function closeDatabaseAdapter(adapter: any): Promise<void> {
+  try {
+    if (typeof adapter?.close === "function") {
+      await adapter.close();
+      return;
+    }
+    if (typeof adapter?.pool?.end === "function") {
+      await adapter.pool.end();
+      return;
+    }
+    if (typeof adapter?.pool?.close === "function") {
+      await adapter.pool.close();
+    }
+  } catch (e) {
+    console.error("Failed to close database adapter", e);
+  }
+}
+
 class DatabaseContextProvider extends BaseContextProvider {
   static description: ContextProviderDescription = {
     title: "database",
@@ -24,8 +67,45 @@ class DatabaseContextProvider extends BaseContextProvider {
     renderInlineAs: "",
   };
 
+  private adapters = new Map<string, any>();
+
   get deprecationMessage() {
     return "The database context provider is deprecated and may be removed in a later version. Please consider using a database MCP server like postgres-mcp (https://github.com/crystaldba/postgres-mcp) instead.";
+  }
+
+  private connectionList(): any[] {
+    const connections = this.options?.connections;
+    return Array.isArray(connections) ? connections : [];
+  }
+
+  private async adapterFor(connection: any): Promise<any> {
+    const key = connectionKey(connection);
+    const cached = this.adapters.get(key);
+    if (cached) return cached;
+    const adapter = await getDatabaseAdapter(
+      connection.connection_type,
+      connection.connection,
+    );
+    this.adapters.set(key, adapter);
+    return adapter;
+  }
+
+  private async dropStaleAdapters(): Promise<void> {
+    const live = new Set(this.connectionList().map(connectionKey));
+    for (const [key, adapter] of this.adapters) {
+      if (live.has(key)) continue;
+      this.adapters.delete(key);
+      await closeDatabaseAdapter(adapter);
+    }
+  }
+
+  /** Close every pool. Called when the config that owns this provider is dropped. */
+  async close(): Promise<void> {
+    const adapters = [...this.adapters.values()];
+    this.adapters.clear();
+    for (const adapter of adapters) {
+      await closeDatabaseAdapter(adapter);
+    }
   }
 
   async getContextItems(
@@ -33,21 +113,18 @@ class DatabaseContextProvider extends BaseContextProvider {
     extras: ContextProviderExtras,
   ): Promise<ContextItem[]> {
     const contextItems: ContextItem[] = [];
-
-    const connections = this.options?.connections;
-
-    if (connections === null) {
+    const connections = this.connectionList();
+    if (connections.length === 0) {
       return contextItems;
     }
 
-    const [connectionName, table] = query.split(".");
+    await this.dropStaleAdapters();
+    const { connectionName, table } = splitDatabaseQuery(query);
 
     for (const connection of connections) {
-      if (connection.name === connectionName) {
-        const adapter = await getDatabaseAdapter(
-          connection.connection_type,
-          connection.connection,
-        );
+      if (connection.name !== connectionName) continue;
+      try {
+        const adapter = await this.adapterFor(connection);
         const tablesAndSchemas = await adapter.getAllTablesAndSchemas(
           connection.connection.database,
         );
@@ -56,31 +133,29 @@ class DatabaseContextProvider extends BaseContextProvider {
           let prompt = `Schema for all tables on ${connection.connection_type} is `;
           prompt += JSON.stringify(tablesAndSchemas);
 
-          const contextItem = {
+          contextItems.push({
             name: `${connectionName}-all-tables-schemas`,
             description: "Schema for all tables.",
             content: prompt,
-          };
-
-          contextItems.push(contextItem);
-        } else {
-          const tables = Object.keys(tablesAndSchemas);
-
-          tables.forEach((tableName) => {
-            if (table === tableName) {
-              let prompt = `Schema for ${tableName} on ${connection.connection_type} is `;
-              prompt += JSON.stringify(tablesAndSchemas[tableName]);
-
-              const contextItem = {
-                name: `${connectionName}-${tableName}-schema`,
-                description: `${tableName} Schema`,
-                content: prompt,
-              };
-
-              contextItems.push(contextItem);
-            }
           });
+        } else {
+          for (const tableName of Object.keys(tablesAndSchemas)) {
+            if (table !== tableName) continue;
+            let prompt = `Schema for ${tableName} on ${connection.connection_type} is `;
+            prompt += JSON.stringify(tablesAndSchemas[tableName]);
+
+            contextItems.push({
+              name: `${connectionName}-${tableName}-schema`,
+              description: `${tableName} Schema`,
+              content: prompt,
+            });
+          }
         }
+      } catch (e) {
+        console.error(
+          `Failed to read database connection ${connection?.name}:`,
+          e,
+        );
       }
     }
 
@@ -91,39 +166,40 @@ class DatabaseContextProvider extends BaseContextProvider {
     args: LoadSubmenuItemsArgs,
   ): Promise<ContextSubmenuItem[]> {
     const contextItems: ContextSubmenuItem[] = [];
-    const connections = this.options?.connections;
-
-    if (connections === null) {
+    const connections = this.connectionList();
+    if (connections.length === 0) {
       return contextItems;
     }
 
+    await this.dropStaleAdapters();
+
     for (const connection of connections) {
-      const adapter = await getDatabaseAdapter(
-        connection.connection_type,
-        connection.connection,
-      );
-      const tablesAndSchemas = await adapter.getAllTablesAndSchemas(
-        connection.connection.database,
-      );
-      const tables = Object.keys(tablesAndSchemas);
+      try {
+        const adapter = await this.adapterFor(connection);
+        const tablesAndSchemas = await adapter.getAllTablesAndSchemas(
+          connection.connection.database,
+        );
+        const tables = Object.keys(tablesAndSchemas);
 
-      const contextItem = {
-        id: `${connection.name}.all`,
-        title: `${connection.name} all table schemas`,
-        description: "",
-      };
-
-      contextItems.push(contextItem);
-
-      tables.forEach((tableName) => {
-        const contextItem = {
-          id: `${connection.name}.${tableName}`,
-          title: `${connection.name}.${tableName} schema`,
+        contextItems.push({
+          id: `${connection.name}.all`,
+          title: `${connection.name} all table schemas`,
           description: "",
-        };
+        });
 
-        contextItems.push(contextItem);
-      });
+        for (const tableName of tables) {
+          contextItems.push({
+            id: `${connection.name}.${tableName}`,
+            title: `${connection.name}.${tableName} schema`,
+            description: "",
+          });
+        }
+      } catch (e) {
+        console.error(
+          `Failed to list database connection ${connection?.name}:`,
+          e,
+        );
+      }
     }
 
     return contextItems;

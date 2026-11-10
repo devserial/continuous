@@ -136,9 +136,18 @@ export class ContinuedLanguageModelChatProvider implements vscode.LanguageModelC
           toolCalls.add(delta);
         }
       }
-      for (const call of toolCalls.finish()) {
+      // A cancelled stream's tool calls are incomplete. Reporting them would
+      // run the tool with missing arguments.
+      if (token.isCancellationRequested) return;
+      const { calls, rejected } = toolCalls.finish();
+      for (const call of calls) {
         progress.report(
           new vscode.LanguageModelToolCallPart(call.id, call.name, call.input),
+        );
+      }
+      if (rejected.length) {
+        throw new Error(
+          `Tool call arguments were incomplete and were not run: ${rejected.join(", ")}`,
         );
       }
     } finally {
@@ -211,6 +220,45 @@ export function modelInfo(llm: ILLM, title: string): ContinuedModelInfo {
   };
 }
 
+type DataPartLike = { mimeType: string; data?: Uint8Array | number[] };
+
+function asDataPart(part: unknown): DataPartLike | undefined {
+  if (!part || typeof part !== "object") return undefined;
+  // Present on current VS Code; absent from older typings, so look it up.
+  const DataPart = (
+    vscode as {
+      LanguageModelDataPart?: abstract new (...args: never[]) => DataPartLike;
+    }
+  ).LanguageModelDataPart;
+  if (typeof DataPart === "function" && part instanceof DataPart) {
+    return part;
+  }
+  const candidate = part as { mimeType?: unknown; data?: unknown };
+  if (typeof candidate.mimeType !== "string") return undefined;
+  if (candidate.data instanceof Uint8Array || Array.isArray(candidate.data)) {
+    return { mimeType: candidate.mimeType, data: candidate.data };
+  }
+  return undefined;
+}
+
+function dataPartBytes(part: DataPartLike): number {
+  const data = part.data;
+  if (!data) return 0;
+  return data instanceof Uint8Array ? data.byteLength : data.length;
+}
+
+/** Binary tool output is described, not expanded into a JSON byte map. */
+export function toolResultPartText(part: unknown): string {
+  if (part instanceof vscode.LanguageModelTextPart) return part.value;
+  if (typeof part === "string") return part;
+  const dataPart = asDataPart(part);
+  if (dataPart) {
+    const kb = Math.max(1, Math.round(dataPartBytes(dataPart) / 1024));
+    return `[${dataPart.mimeType}, ${kb} KB]`;
+  }
+  return "";
+}
+
 /** VS Code request messages to Continuous chat messages. */
 export function toChatMessages(
   messages: readonly vscode.LanguageModelChatRequestMessage[],
@@ -219,31 +267,27 @@ export function toChatMessages(
   for (const message of messages) {
     let text = "";
     const toolCalls: { id: string; name: string; input: object }[] = [];
+    const toolResults: { callId: string; content: string }[] = [];
     for (const part of message.content) {
       if (part instanceof vscode.LanguageModelTextPart) {
         text += part.value;
       } else if (part instanceof vscode.LanguageModelToolCallPart) {
         toolCalls.push({ id: part.callId, name: part.name, input: part.input });
       } else if (part instanceof vscode.LanguageModelToolResultPart) {
-        // Tool results become their own "tool" messages, in order.
-        if (text) {
-          out.push({ role: "user", content: text });
-          text = "";
-        }
-        out.push({
-          role: "tool",
-          toolCallId: part.callId,
-          content: part.content
-            .map((c) =>
-              c instanceof vscode.LanguageModelTextPart
-                ? c.value
-                : typeof c === "string"
-                  ? c
-                  : JSON.stringify(c),
-            )
-            .join(""),
+        toolResults.push({
+          callId: part.callId,
+          content: part.content.map((c) => toolResultPartText(c)).join(""),
         });
       }
+    }
+    // Tool replies have to follow the assistant tool_calls immediately.
+    // User text that arrived in the same message goes after them.
+    for (const result of toolResults) {
+      out.push({
+        role: "tool",
+        toolCallId: result.callId,
+        content: result.content,
+      });
     }
     if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
       out.push({
@@ -312,19 +356,36 @@ export class ToolCallCollector {
     if (delta.function?.arguments) last.args += delta.function.arguments;
   }
 
-  finish(): { id: string; name: string; input: object }[] {
-    return this.calls
-      .filter((c) => c.name)
-      .map((c) => {
-        let input: object = {};
-        try {
-          const parsed = c.args.trim() ? JSON.parse(c.args) : {};
-          input = parsed && typeof parsed === "object" ? parsed : {};
-        } catch {
-          input = {};
+  /**
+   * Calls whose argument text is not a JSON object are listed in `rejected`
+   * and are not given empty arguments. Empty argument text is a finished
+   * call that takes no arguments.
+   */
+  finish(): {
+    calls: { id: string; name: string; input: object }[];
+    rejected: string[];
+  } {
+    const calls: { id: string; name: string; input: object }[] = [];
+    const rejected: string[] = [];
+    for (const call of this.calls) {
+      if (!call.name) continue;
+      const trimmed = call.args.trim();
+      if (!trimmed) {
+        calls.push({ id: call.id, name: call.name, input: {} });
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== "object") {
+          rejected.push(call.name);
+          continue;
         }
-        return { id: c.id, name: c.name, input };
-      });
+        calls.push({ id: call.id, name: call.name, input: parsed });
+      } catch {
+        rejected.push(call.name);
+      }
+    }
+    return { calls, rejected };
   }
 }
 

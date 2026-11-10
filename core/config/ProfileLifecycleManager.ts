@@ -11,6 +11,7 @@ import {
   IDE,
 } from "../index.js";
 
+import { closeContextProviders } from "../context/closeProviders.js";
 import { Logger } from "../util/Logger.js";
 import { finalToBrowserConfig } from "./load.js";
 import { IProfileLoader } from "./profile/IProfileLoader.js";
@@ -40,6 +41,9 @@ export class ProfileLifecycleManager {
   }
 
   clearConfig() {
+    void closeContextProviders(
+      this.savedConfigResult?.config?.contextProviders,
+    );
     this.savedConfigResult = undefined;
     this.savedBrowserConfigResult = undefined;
     this.pendingConfigPromise = undefined;
@@ -49,6 +53,9 @@ export class ProfileLifecycleManager {
   async reloadConfig(
     additionalContextProviders: IContextProvider[] = [],
   ): Promise<ConfigResult<ContinueConfig>> {
+    await closeContextProviders(
+      this.savedConfigResult?.config?.contextProviders,
+    );
     this.savedConfigResult = undefined;
     this.savedBrowserConfigResult = undefined;
     this.pendingConfigPromise = undefined;

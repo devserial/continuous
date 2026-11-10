@@ -40,6 +40,7 @@ export class DocumentHistoryTracker {
     documentContent: string,
     ast: Parser.Tree,
   ): void {
+    this.releaseTrees(this.documentAstMap.get(documentPath), ast);
     this.documentAstMap.set(documentPath, [ast]);
     this.documentContentHistoryMap.set(documentPath, [documentContent]);
   }
@@ -66,9 +67,11 @@ export class DocumentHistoryTracker {
       return; // Early return - document was added with initial state
     }
 
-    // Only execute this if the arrays already existed
-    astHistory.unshift(ast);
-    documentHistory.unshift(documentContent);
+    // Only the newest snapshot is read. Drop the rest so file text and
+    // tree-sitter trees do not accumulate for the life of the window.
+    this.releaseTrees(astHistory, ast);
+    this.documentAstMap.set(documentPath, [ast]);
+    this.documentContentHistoryMap.set(documentPath, [documentContent]);
   }
 
   /**
@@ -123,6 +126,7 @@ export class DocumentHistoryTracker {
    * @param documentPath The path of the document to delete.
    */
   public deleteDocument(documentPath: string): void {
+    this.releaseTrees(this.documentAstMap.get(documentPath));
     this.documentAstMap.delete(documentPath);
     this.documentContentHistoryMap.delete(documentPath);
   }
@@ -131,7 +135,23 @@ export class DocumentHistoryTracker {
    * Clear all documents from the tracker.
    */
   public clearMap(): void {
+    for (const trees of this.documentAstMap.values()) {
+      this.releaseTrees(trees);
+    }
     this.documentAstMap.clear();
     this.documentContentHistoryMap.clear();
+  }
+
+  /** Free WASM trees. `keep` is the snapshot that is still in use. */
+  private releaseTrees(trees: Parser.Tree[] | undefined, keep?: Parser.Tree) {
+    for (const tree of trees ?? []) {
+      if (tree === keep) continue;
+      const deletable = tree as Parser.Tree & { delete?: () => void };
+      try {
+        deletable.delete?.();
+      } catch (e) {
+        console.error("Failed to delete document history tree", e);
+      }
+    }
   }
 }

@@ -28,7 +28,7 @@ export async function renderTemplatedString(
     getUriFromPath,
   );
 
-  const templateFn = handlebars.compile(withLetterKeys);
+  const templateFn = handlebars.compile(withLetterKeys, { noEscape: true });
   const renderedString = templateFn(templateData);
 
   return resolveHelperPromises(renderedString, helperPromises);

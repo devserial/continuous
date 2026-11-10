@@ -29,6 +29,7 @@ import { gracefulExit, updateAgentMetadata } from "../util/exit.js";
 import { formatError } from "../util/formatError.js";
 import { getGitDiffSnapshot } from "../util/git.js";
 import { logger } from "../util/logger.js";
+import { exitBecause } from "../util/processErrors.js";
 import { readStdinSync } from "../util/stdin.js";
 
 import { ExtendedCommandOptions } from "./BaseCommandOptions.js";
@@ -421,6 +422,12 @@ export async function serve(prompt?: string, options: ServeOptions = {}) {
         );
       }
     }
+  });
+
+  // EADDRINUSE and other bind failures are emitted here, not thrown. Without
+  // a listener they become an uncaught exception and the process stays up.
+  server.on("error", (err) => {
+    exitBecause(err, "Server failed to listen:");
   });
 
   // Check for inactivity and shutdown. A wave of loop workers counts as

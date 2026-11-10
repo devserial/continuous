@@ -101,6 +101,25 @@ describe("runAgentTurn", () => {
     expect(calls[1].at(-1).content).toBe("Error: The user declined");
   });
 
+  it("does not run a tool call whose arguments were cut off", async () => {
+    const { llm } = scriptedLlm([
+      [
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "t1", function: { name: "run", arguments: '{"command":' } },
+          ],
+        },
+      ],
+    ]);
+    const { io: agentIo } = io();
+    await expect(
+      runAgentTurn({ llm, history: [], prompt: "go", tools: [] }, agentIo),
+    ).rejects.toThrow(/incomplete/);
+    expect(agentIo.invokeTool).not.toHaveBeenCalled();
+  });
+
   it("stops after maxSteps", async () => {
     const looping = Array.from({ length: 5 }, () => [
       {

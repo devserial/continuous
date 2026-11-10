@@ -2,6 +2,10 @@ import { v4 as uuidv4 } from "uuid";
 
 export type HandlebarsType = typeof import("handlebars");
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function convertToLetter(num: number): string {
   let result = "";
   while (num > 0) {
@@ -63,9 +67,11 @@ export async function prepareTemplatedFilepaths(
 
         filepathLetters.set(letter, originalNodeVal);
 
+        // Replace every copy. The path is literal text, and the file
+        // contents are substituted later without HTML escaping.
         withLetterKeys = withLetterKeys.replace(
-          new RegExp(`{{\\s*${originalNodeVal}\\s*}}`),
-          `{{${letter}}}`,
+          new RegExp(`{{\\s*${escapeRegExp(originalNodeVal)}\\s*}}`, "g"),
+          () => `{{${letter}}}`,
         );
 
         letterIndex++;
@@ -104,7 +110,9 @@ export async function resolveHelperPromises(
   await Promise.all(Object.values(promises));
 
   for (const id in promises) {
-    renderedString = renderedString.replace(`__${id}__`, await promises[id]);
+    // split/join so `$&` and `$'` in helper output stay literal.
+    const value = await promises[id];
+    renderedString = renderedString.split(`__${id}__`).join(value);
   }
 
   return renderedString;

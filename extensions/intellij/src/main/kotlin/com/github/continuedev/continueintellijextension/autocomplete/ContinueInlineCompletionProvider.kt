@@ -56,6 +56,8 @@ class ContinueInlineCompletionProvider : InlineCompletionProvider {
 
             val isJumping = nextEditJumpManager.isJumpInProgress()
             val chainExists = nextEditService.chainExists()
+            val document = editor.document
+            val documentStamp = document.modificationStamp
             val nextEditOutcome = when {
                 isJumping && chainExists -> nextEditService.handleCase2() // Case 2: Jumping (chain exists, jump was taken).
                 chainExists -> nextEditService.handleCase3(
@@ -70,16 +72,23 @@ class ContinueInlineCompletionProvider : InlineCompletionProvider {
                 ) // Case 1: Typing (chain does not exist).
             }
 
-            if (nextEditOutcome == null) {
+            if (nextEditOutcome == null || document.modificationStamp != documentStamp) {
                 return InlineCompletionSuggestion.Empty
             }
 
             val editableRegionStartLine = nextEditOutcome.editableRegionStartLine
             val editableRegionEndLine = nextEditOutcome.editableRegionEndLine
-            val oldEditRangeSlice = editor.document.text
-                .split("\n")
-                .drop(editableRegionStartLine)
-                .take(editableRegionEndLine - editableRegionStartLine + 1)
+            val lines = document.text.split("\n")
+            if (
+                document.modificationStamp != documentStamp ||
+                editableRegionStartLine < 0 ||
+                editableRegionEndLine < editableRegionStartLine ||
+                editableRegionEndLine >= lines.size
+            ) {
+                return InlineCompletionSuggestion.Empty
+            }
+            val oldEditRangeSlice = lines
+                .subList(editableRegionStartLine, editableRegionEndLine + 1)
                 .joinToString("\n")
 
             // Check if it's a FIM (Fill-In-Middle) operation

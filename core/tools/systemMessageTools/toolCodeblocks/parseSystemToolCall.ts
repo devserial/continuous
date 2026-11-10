@@ -59,11 +59,19 @@ export function handleToolCallBuffer(
           state.currentArgName = argName;
           state.isWithinArgStart = false;
           const argPrefix = state.processedArgNames.size === 0 ? "{" : ",";
-          return createDelta("", `${argPrefix}"${argName}":`, state.toolCallId);
+          // The name is model-written text that is spliced into JSON. Quote it
+          // so a quote or backslash in the name cannot break the object.
+          return createDelta(
+            "",
+            `${argPrefix}${JSON.stringify(argName)}:`,
+            state.toolCallId,
+          );
         }
       } else if (state.currentArgName) {
         if (isNewLine) {
-          const isEndArgTag = line.match(/end_?arg/i);
+          // Only a line that is the tag itself ends the argument. A file can
+          // contain the letters (backendArgs, appendArgs) without being a tag.
+          const isEndArgTag = /^\s*end_?arg\s*$/i.test(line);
           if (isEndArgTag) {
             let trimmedValue = state.currentArgChunks.join("").trim();
             state.currentArgChunks.length = 0;

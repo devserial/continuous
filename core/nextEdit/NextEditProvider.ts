@@ -225,20 +225,27 @@ export class NextEditProvider {
     this.currentEditChainId = null;
     this.previousCompletions = [];
 
-    if (this.previousRequest) {
+    const request = this.previousRequest;
+    if (!request) return;
+
+    // Callers often do not await deleteChain. A missing file must not become
+    // an unhandled rejection.
+    try {
       const fileContent = (
-        await this.ide.readFile(this.previousRequest.filepath)
+        await this.ide.readFile(request.filepath)
       ).toString();
 
-      const ast = await getAst(this.previousRequest.filepath, fileContent);
+      const ast = await getAst(request.filepath, fileContent);
 
       if (ast) {
         DocumentHistoryTracker.getInstance().push(
-          localPathOrUriToPath(this.previousRequest.filepath),
+          localPathOrUriToPath(request.filepath),
           fileContent,
           ast,
         );
       }
+    } catch (e) {
+      console.error("Failed to snapshot document history:", e);
     }
   }
 

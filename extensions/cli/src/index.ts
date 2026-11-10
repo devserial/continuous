@@ -21,6 +21,7 @@ import { post } from "./util/apiClient.js";
 import { markUnhandledError } from "./util/errorState.js";
 import { gracefulExit } from "./util/exit.js";
 import { logger } from "./util/logger.js";
+import { exitBecause } from "./util/processErrors.js";
 import { readStdinSync } from "./util/stdin.js";
 import { getVersion } from "./version.js";
 
@@ -153,15 +154,11 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 process.on("uncaughtException", (error) => {
-  // Mark that an unhandled error occurred - this will cause non-zero exit
-  markUnhandledError();
-
-  logger.error("Uncaught Exception:", error);
-  // Report to API if running in serve mode
-  reportUnhandledErrorToApi(error).catch(() => {
-    // Silently fail if API reporting errors - already logged in helper
-  });
-  // Don't exit the process immediately, but hasUnhandledError will cause non-zero exit later
+  const asError = error instanceof Error ? error : new Error(String(error));
+  // Report to API if running in serve mode, then leave. Staying up after an
+  // uncaught exception leaves serve idle with no listener.
+  void reportUnhandledErrorToApi(asError);
+  exitBecause(asError, "Uncaught Exception:");
 });
 
 // keyboard interruption handler for non-TUI flows

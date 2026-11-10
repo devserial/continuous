@@ -22,6 +22,8 @@ export class PrefetchQueue {
   private processedQueue: ProcessedItem[] = [];
   private prefetchLimit: number;
   private abortController: AbortController;
+  /** Serializes process() so in-flight requests count toward the limit. */
+  private tail: Promise<void> = Promise.resolve();
 
   private usingFullFileDiff: boolean = true;
 
@@ -59,12 +61,23 @@ export class PrefetchQueue {
     return this.processedQueue.shift();
   }
 
-  // Process items from unprocessed queue
-  async process(ctx: any): Promise<void> {
+  // Process items from unprocessed queue. One loop runs at a time; a call
+  // made while another is in flight waits and then drains whatever is left.
+  process(ctx: any): Promise<void> {
+    const run = this.tail.then(() => this.drain(ctx));
+    this.tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async drain(ctx: any): Promise<void> {
+    const controller = this.abortController;
     while (
       this.unprocessedQueue.length > 0 &&
       this.processedQueue.length < this.prefetchLimit &&
-      !this.abortController.signal.aborted
+      !controller.signal.aborted
     ) {
       const location = this.dequeueUnprocessed();
       console.log("processing:");
@@ -79,13 +92,23 @@ export class PrefetchQueue {
           await NextEditProvider.getInstance().provideInlineCompletionItemsWithChain(
             ctx,
             location,
-            this.abortController.signal,
+            controller.signal,
             this.usingFullFileDiff,
           );
+
+        // abort() swaps the controller and clears the queues. A result that
+        // belongs to the previous run must not land in the new queue.
+        if (controller.signal.aborted || controller !== this.abortController) {
+          break;
+        }
 
         if (!outcome) {
           console.log("outcome is undefined");
           continue;
+        }
+
+        if (this.processedQueue.length >= this.prefetchLimit) {
+          break;
         }
 
         this.enqueueProcessed({
@@ -98,7 +121,7 @@ export class PrefetchQueue {
           this.processedQueue.length,
         );
       } catch (error) {
-        if (!this.abortController.signal.aborted) {
+        if (!controller.signal.aborted) {
           // Handle error
           console.error("Error processing item:", error);
         }

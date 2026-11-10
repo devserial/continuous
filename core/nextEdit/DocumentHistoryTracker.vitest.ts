@@ -7,8 +7,9 @@ vi.mock("web-tree-sitter", () => {
   return {
     default: {
       Tree: class MockTree {
-        constructor() {
-          // Mock implementation
+        deleted = false;
+        delete() {
+          this.deleted = true;
         }
       },
     },
@@ -71,6 +72,22 @@ describe("DocumentHistoryTracker", () => {
 
       expect(ast).toBe(mockAst2);
       expect(content).toBe(testContent2);
+    });
+
+    it("keeps only the newest snapshot and deletes the previous tree", () => {
+      tracker.addDocument(testDocPath, testContent1, mockAst1);
+      tracker.push(testDocPath, testContent2, mockAst2);
+      tracker.push(testDocPath, "const x = 3;", mockAst1);
+
+      expect(tracker.getMostRecentDocumentHistory(testDocPath)).toBe(
+        "const x = 3;",
+      );
+      expect(tracker.getMostRecentAst(testDocPath)).toBe(mockAst1);
+      expect((mockAst2 as unknown as { deleted: boolean }).deleted).toBe(true);
+      // @ts-ignore - the history must not keep every version
+      expect(tracker.documentContentHistoryMap.get(testDocPath)).toEqual([
+        "const x = 3;",
+      ]);
     });
 
     it("should add a document if it doesn't exist when pushing", () => {
