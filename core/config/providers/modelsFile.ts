@@ -13,6 +13,7 @@ import { getContinueGlobalPath } from "../../util/paths";
 import { localPathToUri } from "../../util/pathToUri";
 import { joinPathsToUri } from "../../util/uri";
 import { externalCatalogModels } from "./externalAccounts";
+import { trustedWorkspaceFiles } from "../projectTrust";
 import { WORKSPACE_DIRS } from "../../util/workspaceDirs";
 
 export const MODELS_FILE_NAME = "models.yaml";
@@ -86,15 +87,15 @@ export function parseModelsFile(
 
 /**
  * The model catalog for loading a config: ~/.continuous/models.yaml, then each
- * workspace's .continuous/models.yaml. A workspace model with the same name
- * replaces the global one, as workspace provider accounts do.
+ * workspace's models.yaml once that folder is trusted. A name the user
+ * already has is kept; the folder can only add a new name.
  */
 export async function loadModelCatalog(
   ide: IDE,
 ): Promise<{ models: CatalogModel[]; errors: ConfigValidationError[] }> {
   const errors: ConfigValidationError[] = [];
   const byName = new Map<string, CatalogModel>();
-  // Models of accounts from the IDE's own settings first; the files win
+  // Models of accounts from the IDE's own settings first; the user's file wins
   for (const m of externalCatalogModels()) byName.set(m.name, m);
 
   const add = (content: string, source: string) => {
@@ -108,16 +109,38 @@ export async function loadModelCatalog(
     add(fs.readFileSync(globalPath, "utf8"), localPathToUri(globalPath));
   }
 
+  const workspace: { path: string; content: string }[] = [];
   try {
     for (const dir of await ide.getWorkspaceDirs()) {
-      // The older .continue first, so .continuous wins on a shared name
+      // The older .continue first, so .continuous wins on a new shared name
       for (const name of [...WORKSPACE_DIRS].reverse()) {
         const uri = joinPathsToUri(dir, name, MODELS_FILE_NAME);
-        if (await ide.fileExists(uri)) add(await ide.readFile(uri), uri);
+        if (await ide.fileExists(uri)) {
+          workspace.push({ path: uri, content: await ide.readFile(uri) });
+        }
       }
     }
   } catch (e) {
     console.warn("Could not read workspace models.yaml", e);
+  }
+
+  const trusted = await trustedWorkspaceFiles(ide, "catalog", workspace);
+  errors.push(...trusted.notices);
+  const userNames = new Set(byName.keys());
+  for (const file of trusted.files) {
+    const parsed = parseModelsFile(file.content, file.path);
+    errors.push(...parsed.errors);
+    for (const model of parsed.models) {
+      if (userNames.has(model.name)) {
+        errors.push({
+          fatal: false,
+          message: `Kept your model "${model.name}" and did not use the one from this folder.`,
+          uri: file.path,
+        });
+        continue;
+      }
+      byName.set(model.name, model);
+    }
   }
 
   return { models: Array.from(byName.values()), errors };

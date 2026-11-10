@@ -2162,6 +2162,16 @@ type BaseInternalMCPOptions = {
   timeout?: number;
   requestOptions?: RequestOptions;
   sourceFile?: string;
+  /**
+   * "user" for the person's own config and global MCP files. "workspace" for
+   * a file that came with the folder.
+   */
+  configSource?: "user" | "workspace";
+  /**
+   * Set when a workspace file defined this server and that folder is not
+   * trusted. The server is not started and its secret values are not kept.
+   */
+  projectTrust?: "required";
 };
 
 export type InternalStdioMcpOptions = BaseInternalMCPOptions & {

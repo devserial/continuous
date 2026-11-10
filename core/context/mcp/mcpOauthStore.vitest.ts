@@ -47,6 +47,18 @@ describe("McpOauthStore", () => {
     expect((await store.load()).tokens).toEqual(tokens);
   });
 
+  test("a workspace scope does not receive the token stored for the url", async () => {
+    const backing: Record<string, string> = {};
+    const ide = secretsIde(backing);
+    await new McpOauthStore(URL_A, ide).update((c) => ({ ...c, tokens }));
+    expect(
+      await new McpOauthStore(URL_A, ide, undefined, "workspace").load(),
+    ).toEqual({});
+    expect(mcpOauthSecretKey(URL_A)).not.toBe(
+      mcpOauthSecretKey(URL_A, "workspace"),
+    );
+  });
+
   test("servers are isolated and keys are not derived from the raw URL", async () => {
     const backing: Record<string, string> = {};
     const ide = secretsIde(backing);

@@ -47,6 +47,7 @@ import {
   createSignedInOauthProvider,
   getOauthCallbackUrl,
 } from "./MCPOauth";
+import { oauthScopeForMcpServer } from "./workspaceMcpPolicy";
 
 const DEFAULT_MCP_TIMEOUT = 20_000; // 20 seconds
 
@@ -132,6 +133,15 @@ class MCPConnection {
     );
 
     this.abortController = new AbortController();
+
+    // A folder's server does not start, and does not open a transport, until
+    // that folder is trusted. connectClient checks this again.
+    if (this.options.projectTrust === "required") {
+      this.status = "disabled";
+      this.infos.push(
+        "Defined by this folder, which is not trusted, so this server was not started.",
+      );
+    }
   }
 
   async disconnect(disable = false) {
@@ -156,6 +166,10 @@ class MCPConnection {
   }
 
   async connectClient(forceRefresh: boolean, externalSignal: AbortSignal) {
+    if (this.options.projectTrust === "required") {
+      this.status = "disabled";
+      return;
+    }
     if (this.status === "disabled") {
       return;
     }
@@ -486,10 +500,24 @@ Set each one in ~/.continuous/.env, <workspace>/.continuous/.env or <workspace>/
     ) {
       return undefined;
     }
+    let workspaceDirs: string[] = [];
+    try {
+      workspaceDirs = await this.extras.ide.getWorkspaceDirs();
+    } catch {
+      workspaceDirs = [];
+    }
+    const decision = oauthScopeForMcpServer(this.options, workspaceDirs);
+    if (!decision.sendStoredToken) {
+      this.infos.push("A saved sign-in is not sent to this folder's server.");
+      return undefined;
+    }
     const provider = await createSignedInOauthProvider(
       this.options.url,
       this.extras.ide,
-      { callbackPort: this.oauthSettings?.callbackPort },
+      {
+        callbackPort: this.oauthSettings?.callbackPort,
+        oauthScope: decision.scope,
+      },
     );
     if (provider) {
       this.isProtectedResource = true;

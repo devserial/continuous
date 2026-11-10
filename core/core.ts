@@ -1106,6 +1106,14 @@ export class Core {
       const callbackPort = (
         connection?.options as { oauth?: { callbackPort?: number } } | undefined
       )?.oauth?.callbackPort;
+      const oauthScope = connection
+        ? (
+            await import("./context/mcp/workspaceMcpPolicy")
+          ).oauthScopeForMcpServer(
+            connection.options,
+            await this.ide.getWorkspaceDirs().catch(() => []),
+          ).scope
+        : undefined;
       manager.setStatus(msg.data.serverId, "authenticating");
       try {
         const status = await performAuth(
@@ -1113,7 +1121,11 @@ export class Core {
           msg.data.serverUrl,
           this.ide,
           // same proxy / CA settings as the connection itself
-          { callbackPort, fetchFn: connection?.getFetch() as any },
+          {
+            callbackPort,
+            fetchFn: connection?.getFetch() as any,
+            oauthScope,
+          },
         );
         if (status === "AUTHORIZED") {
           // Already signed in (for example the token was still valid)
@@ -1129,7 +1141,18 @@ export class Core {
       }
     });
     on("mcp/removeAuthentication", async (msg) => {
-      await removeMCPAuth(msg.data.serverUrl, this.ide);
+      const connection = MCPManagerSingleton.getInstance().getConnection(
+        msg.data.serverId,
+      );
+      const oauthScope = connection
+        ? (
+            await import("./context/mcp/workspaceMcpPolicy")
+          ).oauthScopeForMcpServer(
+            connection.options,
+            await this.ide.getWorkspaceDirs().catch(() => []),
+          ).scope
+        : undefined;
+      await removeMCPAuth(msg.data.serverUrl, this.ide, oauthScope);
       await MCPManagerSingleton.getInstance().refreshConnection(
         msg.data.serverId,
       );

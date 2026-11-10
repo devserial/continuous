@@ -28,7 +28,10 @@ export class ContinuedMcpServerDefinitionProvider implements vscode.McpServerDef
   /** Called when the config reloads. */
   update(statuses: MCPServerStatus[] | undefined) {
     const next = (statuses ?? []).filter(
-      (s) => s.status !== "disabled" && toDefinition(s, false) !== undefined,
+      (s) =>
+        s.status !== "disabled" &&
+        s.projectTrust !== "required" &&
+        toDefinition(s, false) !== undefined,
     );
     if (fingerprint(next) === fingerprint(this.servers)) return;
     this.servers = next;
@@ -49,7 +52,13 @@ export class ContinuedMcpServerDefinitionProvider implements vscode.McpServerDef
   resolveMcpServerDefinition(
     server: ProvidedDefinition,
   ): ProvidedDefinition | undefined {
-    const options = this.servers.find((s) => s.name === server.label);
+    // Match the definition that was listed. Name alone is not unique: a folder
+    // server and a user server can share a label, and the wrong one would
+    // start with the other's command and secrets.
+    const options =
+      this.servers.find((s) => versionOf(s) === server.version) ??
+      this.servers.find((s) => s.id === server.label) ??
+      this.servers.find((s) => s.name === server.label);
     // A server removed from the config since it was listed is not started.
     return options ? toDefinition(options, true) : undefined;
   }

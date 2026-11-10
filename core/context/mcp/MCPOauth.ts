@@ -29,6 +29,11 @@ export interface McpOauthOptions {
   callbackPort?: number;
   /** Fetch used for discovery, registration and token requests. */
   fetchFn?: FetchLike;
+  /**
+   * When set, tokens are stored apart from the user's sign-in for this URL.
+   * Folder servers use this so they do not receive that sign-in.
+   */
+  oauthScope?: string;
 }
 
 // Use a Map to support concurrent authentications for different servers
@@ -39,6 +44,7 @@ interface MCPOauthContext {
   port: number;
   resourceMetadataUrl?: URL;
   fetchFn?: FetchLike;
+  oauthScope?: string;
   timeout?: ReturnType<typeof setTimeout>;
 }
 const authenticatingContexts = new Map<string, MCPOauthContext>();
@@ -179,7 +185,12 @@ export class MCPConnectionOauthProvider implements OAuthClientProvider {
     private ide: IDE,
     private options: McpOauthOptions & { interactive?: boolean } = {},
   ) {
-    this.store = new McpOauthStore(oauthServerUrl, ide);
+    this.store = new McpOauthStore(
+      oauthServerUrl,
+      ide,
+      undefined,
+      options.oauthScope,
+    );
     this.port = options.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
     // Set default redirect URL immediately for synchronous access
     this._redirectUrl = getOauthCallbackUrl(this.port);
@@ -396,6 +407,7 @@ export async function performAuth(
     port,
     resourceMetadataUrl,
     fetchFn: options.fetchFn,
+    oauthScope: options.oauthScope,
   });
 
   // Map state to server URL for callback matching
@@ -468,6 +480,9 @@ async function handleMCPOauthFailure(
     await new MCPConnectionOauthProvider(
       serverUrl,
       context?.ide ?? ({} as IDE),
+      {
+        oauthScope: context?.oauthScope,
+      },
     ).clear();
   }
   if (!portInUseByAnotherFlow(port)) {
@@ -530,6 +545,7 @@ async function handleMCPOauthCode(authorizationCode: string, state?: string) {
     const authProvider = new MCPConnectionOauthProvider(serverUrl, ide, {
       callbackPort: port,
       interactive: true,
+      oauthScope: context.oauthScope,
     });
     await authProvider.ensureRedirectUrl();
     const authStatus = await auth(authProvider, {
@@ -547,7 +563,9 @@ async function handleMCPOauthCode(authorizationCode: string, state?: string) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("OAuth authorization failed:", errorMessage);
     // Don't keep a half-finished registration / verifier around
-    await new MCPConnectionOauthProvider(serverUrl, ide).clear();
+    await new MCPConnectionOauthProvider(serverUrl, ide, {
+      oauthScope: context.oauthScope,
+    }).clear();
     if (context?.ide) {
       await context.ide.showToast("error", `OAuth failed: ${errorMessage}`);
       try {
@@ -563,7 +581,11 @@ async function handleMCPOauthCode(authorizationCode: string, state?: string) {
   }
 }
 
-export async function removeMCPAuth(url: string, ide: IDE) {
-  const authProvider = new MCPConnectionOauthProvider(url, ide);
+export async function removeMCPAuth(
+  url: string,
+  ide: IDE,
+  oauthScope?: string,
+) {
+  const authProvider = new MCPConnectionOauthProvider(url, ide, { oauthScope });
   await authProvider.clear();
 }

@@ -3,6 +3,7 @@ import {
   claudeDesktopLikeConfigFileSchema,
   ConfigValidationError,
   convertJsonMcpConfigToYamlMcpConfig,
+  decodeFQSN,
   McpJsonConfig,
   mcpServersJsonSchema,
   RequestOptions,
@@ -20,6 +21,11 @@ import { deduplicateArray } from "../../../util";
 import { getGlobalFolderWithName } from "../../../util/paths";
 import { localPathToUri } from "../../../util/pathToUri";
 import { getUriPathBasename, joinPathsToUri } from "../../../util/uri";
+import { LocalPlatformClient } from "../../../config/yaml/LocalPlatformClient";
+import {
+  isWorkspaceMcpSource,
+  scopeIsTrusted,
+} from "../../../config/projectTrust";
 import { WORKSPACE_DIRS } from "../../../util/workspaceDirs";
 
 /**
@@ -35,14 +41,16 @@ export async function loadJsonMcpConfigs(
 }> {
   const errors: ConfigValidationError[] = [];
 
-  // Get dirs
+  // Get dirs. The user's global folder is read first, then each workspace,
+  // so a shared name keeps the user's server. Within a folder, paths are
+  // sorted so the result does not depend on which read finishes first.
   const workspaceDirs = await ide.getWorkspaceDirs();
-  const mcpDirs = workspaceDirs.flatMap((dir) =>
+  const workspaceMcpDirs = workspaceDirs.flatMap((dir) =>
     WORKSPACE_DIRS.map((name) => joinPathsToUri(dir, name, "mcpServers")),
   );
-  if (includeGlobal) {
-    mcpDirs.push(localPathToUri(getGlobalFolderWithName("mcpServers")));
-  }
+  const globalMcpDir = includeGlobal
+    ? localPathToUri(getGlobalFolderWithName("mcpServers"))
+    : undefined;
 
   // Get json files and their contents
   const overrideDefaultIgnores = ignore()
@@ -55,39 +63,38 @@ export async function loadJsonMcpConfigs(
 
   const jsonFiles: { uri: string; content: string }[] = [];
 
-  await Promise.all(
-    mcpDirs.map(async (dir) => {
-      const exists = await ide.fileExists(dir);
-      if (!exists) {
-        return;
-      }
-      try {
-        const uris = await walkDir(dir, ide, {
+  const readDir = async (dir: string) => {
+    const exists = await ide.fileExists(dir);
+    if (!exists) return;
+    try {
+      const uris = (
+        await walkDir(dir, ide, {
           overrideDefaultIgnores,
           source: "get mcp json files",
-        });
-        const jsonUris = uris.filter((uri) => uri.endsWith(".json"));
-        await Promise.all(
-          jsonUris.map(async (uri) => {
-            try {
-              const content = await ide.readFile(uri);
-              jsonFiles.push({ uri, content });
-            } catch (e) {
-              errors.push({
-                fatal: false,
-                message: `Failed to read MCP server JSON file at ${uri}: ${e instanceof Error ? e.message : String(e)}`,
-              });
-            }
-          }),
-        );
-      } catch (e) {
-        errors.push({
-          fatal: false,
-          message: `Failed to check for MCP JSON files in ${dir}: ${e instanceof Error ? e.message : String(e)}`,
-        });
+        })
+      )
+        .filter((uri) => uri.endsWith(".json"))
+        .sort();
+      for (const uri of uris) {
+        try {
+          jsonFiles.push({ uri, content: await ide.readFile(uri) });
+        } catch (e) {
+          errors.push({
+            fatal: false,
+            message: `Failed to read MCP server JSON file at ${uri}: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
       }
-    }),
-  );
+    } catch (e) {
+      errors.push({
+        fatal: false,
+        message: `Failed to check for MCP JSON files in ${dir}: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  };
+
+  if (globalMcpDir) await readDir(globalMcpDir);
+  for (const dir of workspaceMcpDirs) await readDir(dir);
 
   const validJsonConfigs: {
     name: string;
@@ -198,9 +205,70 @@ export async function loadJsonMcpConfigs(
       globalRequestOptions,
     );
   });
-  // Parse and convert files
+  await renderJsonMcpSecrets(ide, mcpServers, workspaceDirs);
+
   return {
     mcpServers,
     errors,
   };
+}
+
+const SECRET_TEMPLATE = /\$\{\{\s*secrets\.([A-Za-z0-9_./-]+)\s*\}\}/g;
+
+/** Fill `${{ secrets.NAME }}` left by the JSON-to-YAML env conversion. */
+export async function renderSecretTemplate(
+  value: string,
+  client: LocalPlatformClient,
+): Promise<string> {
+  const names = [...value.matchAll(SECRET_TEMPLATE)].map((match) => match[1]);
+  if (names.length === 0) return value;
+  const results = await client.resolveFQSNs(
+    names.map((name) => {
+      try {
+        return decodeFQSN(name);
+      } catch {
+        return { packageSlugs: [], secretName: name };
+      }
+    }),
+  );
+  let rendered = value;
+  for (const result of results) {
+    if (!result || !("value" in result)) continue;
+    rendered = rendered.replace(
+      new RegExp(
+        `\\$\\{\\{\\s*secrets\\.${result.fqsn.secretName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\}\\}`,
+        "g",
+      ),
+      result.value,
+    );
+  }
+  return rendered;
+}
+
+/**
+ * User MCP JSON files get secret values. A folder file gets them only after
+ * that folder is trusted; until then the template is left for the trust gate
+ * to drop.
+ */
+async function renderJsonMcpSecrets(
+  ide: IDE,
+  servers: InternalMcpOptions[],
+  workspaceDirs: string[],
+): Promise<void> {
+  const client = new LocalPlatformClient(ide);
+  for (const server of servers) {
+    if (!("env" in server) || !server.env) continue;
+    const dir = workspaceDirs.find((candidate) =>
+      isWorkspaceMcpSource(server.sourceFile, [candidate]),
+    );
+    if (dir) {
+      const trusted = await scopeIsTrusted(ide, dir, "mcp");
+      if (!trusted) continue;
+    }
+    const rendered: Record<string, string> = {};
+    for (const [key, value] of Object.entries(server.env)) {
+      rendered[key] = await renderSecretTemplate(value, client);
+    }
+    server.env = rendered;
+  }
 }

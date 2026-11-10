@@ -13,6 +13,7 @@ import { getContinueGlobalPath } from "../../util/paths";
 import { localPathToUri } from "../../util/pathToUri";
 import { joinPathsToUri } from "../../util/uri";
 import { externalProviderInstances } from "./externalAccounts";
+import { trustedWorkspaceFiles } from "../projectTrust";
 import { WORKSPACE_DIRS } from "../../util/workspaceDirs";
 
 export const PROVIDERS_FILE_NAME = "providers.yaml";
@@ -78,15 +79,15 @@ export function parseProvidersFile(
 
 /**
  * Provider instances for loading a config: ~/.continuous/providers.yaml, then
- * each workspace's .continuous/providers.yaml. A workspace instance with the
- * same name replaces the global one, like the workspace's configs do.
+ * each workspace's providers.yaml once that folder is trusted. A name the
+ * user already has is kept; the folder can only add a new name.
  */
 export async function loadProviderInstances(
   ide: IDE,
 ): Promise<{ providers: ProviderInstance[]; errors: ConfigValidationError[] }> {
   const errors: ConfigValidationError[] = [];
   const byName = new Map<string, ProviderInstance>();
-  // Accounts from the IDE's own settings first; the files win on a name
+  // Accounts from the IDE's own settings first; the user's file wins on a name
   for (const p of externalProviderInstances()) byName.set(p.name, p);
 
   const add = (content: string, source: string) => {
@@ -100,8 +101,28 @@ export async function loadProviderInstances(
     add(fs.readFileSync(globalPath, "utf8"), localPathToUri(globalPath));
   }
 
-  for (const file of await readWorkspaceProvidersFiles(ide)) {
-    add(file.content, file.uri);
+  const workspace = await readWorkspaceProvidersFiles(ide);
+  const trusted = await trustedWorkspaceFiles(
+    ide,
+    "providers",
+    workspace.map((file) => ({ path: file.uri, content: file.content })),
+  );
+  errors.push(...trusted.notices);
+  const userNames = new Set(byName.keys());
+  for (const file of trusted.files) {
+    const parsed = parseProvidersFile(file.content, file.path);
+    errors.push(...parsed.errors);
+    for (const provider of parsed.providers) {
+      if (userNames.has(provider.name)) {
+        errors.push({
+          fatal: false,
+          message: `Kept your provider "${provider.name}" and did not use the one from this folder.`,
+          uri: file.path,
+        });
+        continue;
+      }
+      byName.set(provider.name, provider);
+    }
   }
 
   return { providers: Array.from(byName.values()), errors };

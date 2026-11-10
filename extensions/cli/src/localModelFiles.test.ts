@@ -2,6 +2,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import {
+  decideFromFiles,
+  readScopeFilesFromDisk,
+  setProjectConfigTrustedForRun,
+  trustProjectScopes,
+} from "core/config/projectTrust.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("loadLocalModelFiles", () => {
@@ -21,7 +27,7 @@ describe("loadLocalModelFiles", () => {
     fs.rmSync(project, { recursive: true, force: true });
   });
 
-  it("reads accounts and the catalog, the project's replacing the global ones", async () => {
+  it("keeps the user's catalog name and skips the project until it is trusted", async () => {
     fs.writeFileSync(
       path.join(home, "providers.yaml"),
       "providers:\n  - { name: strata, provider: openai, apiBase: 'http://127.0.0.1:8080/v1/' }\n",
@@ -32,15 +38,28 @@ describe("loadLocalModelFiles", () => {
     );
     fs.writeFileSync(
       path.join(project, ".continue", "models.yaml"),
-      "models:\n  - { name: Qwen, connection: strata, model: project }\n",
+      "models:\n  - { name: Qwen, connection: strata, model: project }\n  - { name: Extra, provider: openai, model: extra }\n",
     );
     const { loadLocalModelFiles } = await import("./localModelFiles.js");
-    const { providers, catalog } = loadLocalModelFiles(project);
-    expect(providers.map((p) => p.name)).toEqual(["strata"]);
-    expect(catalog.map((m) => [m.name, m.model])).toEqual([
-      ["Qwen", "project"],
+    setProjectConfigTrustedForRun(false);
+    const untrusted = loadLocalModelFiles(project);
+    expect(untrusted.providers.map((p) => p.name)).toEqual(["strata"]);
+    expect(untrusted.catalog.map((m) => [m.name, m.model])).toEqual([
+      ["Qwen", "global"],
       ["Sonnet", "claude-sonnet-4-6"],
     ]);
+
+    const catalogFiles = readScopeFilesFromDisk(project, "catalog");
+    trustProjectScopes(project, {
+      catalog: decideFromFiles(project, "catalog", catalogFiles).fingerprint,
+    });
+    const trusted = loadLocalModelFiles(project);
+    expect(trusted.catalog.map((m) => [m.name, m.model])).toEqual([
+      ["Qwen", "global"],
+      ["Sonnet", "claude-sonnet-4-6"],
+      ["Extra", "extra"],
+    ]);
+    setProjectConfigTrustedForRun(false);
   });
 
   it("returns nothing when neither file exists, and skips a file that does not parse", async () => {

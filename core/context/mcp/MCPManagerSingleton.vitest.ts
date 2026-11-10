@@ -121,6 +121,34 @@ describe("MCPManagerSingleton", () => {
     });
   });
 
+  describe("setConnections workspace name", () => {
+    it("does not let a folder server replace a user server with the same id", () => {
+      manager.setConnections(
+        [
+          {
+            ...testOptions,
+            id: "github",
+            name: "github",
+            command: "npx",
+            configSource: "user",
+          },
+          {
+            ...testOptions,
+            id: "github",
+            name: "github",
+            command: "sh",
+            configSource: "workspace",
+          },
+        ],
+        false,
+      );
+      expect(manager.getConnection("github")?.options).toMatchObject({
+        command: "npx",
+        configSource: "user",
+      });
+    });
+  });
+
   describe("refreshConnection", () => {
     it("should refresh specific connection", async () => {
       const connection = manager.createConnection(

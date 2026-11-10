@@ -122,6 +122,7 @@ export function mergeParentOptions(parentCommand: Command, options: any): any {
     "exclude",
     "agent",
     "betaSubagentTool",
+    "trustProjectConfig",
   ];
 
   for (const optName of inheritableOptions) {

@@ -62,6 +62,7 @@ import type { VsCodeWebviewProtocol } from "../webviewProtocol";
 import { registerVsCodeAi } from "../ai/registerVsCodeAi";
 import { registerTerminalShellSetting } from "../terminalShellSetting";
 import { registerConfigLanguageSupport } from "../lang-server/configLanguageSupport";
+import { promptForWorkspaceConfigTrust } from "../util/workspaceConfigTrust";
 
 export class VsCodeExtension {
   // Currently some of these are public so they can be used in testing (test/test-suites)
@@ -301,6 +302,7 @@ export class VsCodeExtension {
     resolveVerticalDiffManager?.(this.verticalDiffManager);
 
     void this.configHandler.loadConfig().then(async ({ config }) => {
+      void promptForWorkspaceConfigTrust(this.configHandler);
       const shouldUseFullFileDiff = await getUsingFullFileDiff();
       this.completionProvider.updateUsingFullFileDiff(shouldUseFullFileDiff);
       selectionManager.updateUsingFullFileDiff(shouldUseFullFileDiff);
@@ -317,6 +319,7 @@ export class VsCodeExtension {
 
     this.configHandler.onConfigUpdate(
       async ({ config: newConfig, configLoadInterrupted }) => {
+        void promptForWorkspaceConfigTrust(this.configHandler);
         const shouldUseFullFileDiff = await getUsingFullFileDiff();
         this.completionProvider.updateUsingFullFileDiff(shouldUseFullFileDiff);
         selectionManager.updateUsingFullFileDiff(shouldUseFullFileDiff);

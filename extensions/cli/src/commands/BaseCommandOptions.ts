@@ -29,6 +29,8 @@ export interface BaseCommandOptions {
   betaSubagentTool?: boolean;
   /** Run this project's hooks for this session without asking (--trust-project-hooks) */
   trustProjectHooks?: boolean;
+  /** Use this project's Continuous configuration for this session (--trust-project-config) */
+  trustProjectConfig?: boolean;
 }
 
 /**

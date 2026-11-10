@@ -230,12 +230,14 @@
         "continuous.remoteConfigServerUrl": {
           "type": "string",
           "default": null,
-          "markdownDescription": "If your team is set up to use shared configuration, enter the server URL here and your user token below to enable automatic syncing."
+          "scope": "application",
+          "markdownDescription": "If your team is set up to use shared configuration, enter the server URL here and your user token below to enable automatic syncing. Application scope, so a folder's settings cannot set it."
         },
         "continuous.userToken": {
           "type": "string",
           "default": null,
-          "markdownDescription": "If your team is set up to use shared configuration, enter your user token here and your server URL above to enable automatic syncing."
+          "scope": "application",
+          "markdownDescription": "If your team is set up to use shared configuration, enter your user token here and your server URL above to enable automatic syncing. Application scope, so a folder's settings cannot set it."
         },
         "continuous.remoteConfigSyncPeriod": {
           "type": "number",

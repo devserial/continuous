@@ -117,6 +117,22 @@ describe("MCPConnection", () => {
       expect(conn.status).toBe("error");
       expect(conn.errors[0]).toContain("Unsupported transport type: invalid");
     });
+
+    it("does not start a server the folder defined until that folder is trusted", async () => {
+      const conn = new MCPConnection({
+        name: "lint",
+        id: "lint",
+        command: "sh",
+        args: ["-c", "echo"],
+        projectTrust: "required",
+      });
+      expect(conn.status).toBe("disabled");
+      await conn.connectClient(true, new AbortController().signal);
+      expect(conn.status).toBe("disabled");
+      conn.status = "not-connected";
+      await conn.connectClient(true, new AbortController().signal);
+      expect(conn.status).toBe("disabled");
+    });
   });
 
   describe("getStatus", () => {

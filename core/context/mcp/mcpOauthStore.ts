@@ -24,21 +24,29 @@ const KEY_PREFIX = "mcpOauth.";
 /** Serializes read-modify-write per server across provider instances. */
 const queues = new Map<string, Promise<unknown>>();
 
-export function mcpOauthSecretKey(serverUrl: string): string {
+export function mcpOauthSecretKey(serverUrl: string, scope?: string): string {
+  const material = scope ? `${scope}\0${serverUrl}` : serverUrl;
   return (
-    KEY_PREFIX + crypto.createHash("sha256").update(serverUrl).digest("hex")
+    KEY_PREFIX + crypto.createHash("sha256").update(material).digest("hex")
   );
 }
 
 export class McpOauthStore {
   private readonly key: string;
 
+  private readonly globalContext: GlobalContext;
+  /** Separates a folder server from the user's own sign-in for the same URL. */
+  private readonly scope?: string;
+
   constructor(
     private readonly serverUrl: string,
     private readonly ide: IDE,
-    private readonly globalContext: GlobalContext = new GlobalContext(),
+    globalContext?: GlobalContext,
+    scope?: string,
   ) {
-    this.key = mcpOauthSecretKey(serverUrl);
+    this.globalContext = globalContext ?? new GlobalContext();
+    this.scope = scope;
+    this.key = mcpOauthSecretKey(serverUrl, scope);
   }
 
   private async readSecret(): Promise<string | undefined> {
@@ -69,6 +77,8 @@ export class McpOauthStore {
   }
 
   private legacyRecord(): McpOauthRecord | undefined {
+    // A scoped store must not read the user's URL-only record.
+    if (this.scope) return undefined;
     return this.globalContext.get("mcpOauthStorage")?.[this.serverUrl];
   }
 

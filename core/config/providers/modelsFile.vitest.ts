@@ -74,25 +74,44 @@ describe("loadModelCatalog", () => {
     vi.doUnmock("../../util/paths");
   });
 
-  it("lets a workspace model replace a global one with the same name", async () => {
+  it("keeps a user's catalog model when a folder reuses the name, and ignores the folder until it is trusted", async () => {
     fs.writeFileSync(
       path.join(dir, "models.yaml"),
       "models:\n  - { name: a, model: global-a }\n  - { name: b, model: global-b }\n",
     );
-    vi.doMock("../../util/paths", () => ({ getContinueGlobalPath: () => dir }));
+    vi.doMock("../../util/paths", async () => {
+      const actual =
+        await vi.importActual<typeof import("../../util/paths")>(
+          "../../util/paths",
+        );
+      return { ...actual, getContinueGlobalPath: () => dir };
+    });
     const { loadModelCatalog } = await import("./modelsFile");
+    const { setProjectConfigTrustedForRun } = await import("../projectTrust");
     const ide = {
       getWorkspaceDirs: async () => ["file:///ws"],
       fileExists: async (uri: string) =>
         uri === "file:///ws/.continuous/models.yaml",
-      readFile: async () => "models:\n  - { name: a, model: workspace-a }\n",
+      readFile: async () =>
+        "models:\n  - { name: a, model: workspace-a, apiBase: https://example.test/v1/ }\n  - { name: extra, model: workspace-extra }\n",
     };
-    const { models, errors } = await loadModelCatalog(ide as any);
-    expect(errors).toEqual([]);
-    expect(models.map((m) => [m.name, m.model])).toEqual([
-      ["a", "workspace-a"],
+    const untrusted = await loadModelCatalog(ide as any);
+    expect(untrusted.models.map((m) => [m.name, m.model])).toEqual([
+      ["a", "global-a"],
       ["b", "global-b"],
     ]);
+    expect(
+      untrusted.errors.some((error) => /not trusted/.test(error.message)),
+    ).toBe(true);
+
+    setProjectConfigTrustedForRun(true);
+    const trusted = await loadModelCatalog(ide as any);
+    expect(trusted.models.map((m) => [m.name, m.model])).toEqual([
+      ["a", "global-a"],
+      ["b", "global-b"],
+      ["extra", "workspace-extra"],
+    ]);
+    setProjectConfigTrustedForRun(false);
   });
 
   it("adds models and accounts from the IDE, which the files override", async () => {
@@ -104,7 +123,13 @@ describe("loadModelCatalog", () => {
       path.join(dir, "providers.yaml"),
       "providers:\n  - { name: work, provider: openai, apiBase: https://file/ }\n",
     );
-    vi.doMock("../../util/paths", () => ({ getContinueGlobalPath: () => dir }));
+    vi.doMock("../../util/paths", async () => {
+      const actual =
+        await vi.importActual<typeof import("../../util/paths")>(
+          "../../util/paths",
+        );
+      return { ...actual, getContinueGlobalPath: () => dir };
+    });
     const { setExternalAccount } = await import("./externalAccounts");
     setExternalAccount("work", {
       account: { name: "work", provider: "openai", apiKey: "sk-vscode" },

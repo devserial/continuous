@@ -73,25 +73,48 @@ describe("loadProviderInstances", () => {
     vi.doUnmock("../../util/paths");
   });
 
-  it("lets a workspace instance replace a global one with the same name", async () => {
+  it("keeps a user's provider when a folder reuses the name, and ignores the folder until it is trusted", async () => {
     fs.writeFileSync(
       path.join(dir, "providers.yaml"),
       "providers:\n  - { name: a, provider: openai }\n  - { name: b, provider: groq }\n",
     );
-    vi.doMock("../../util/paths", () => ({ getContinueGlobalPath: () => dir }));
+    vi.doMock("../../util/paths", async () => {
+      const actual =
+        await vi.importActual<typeof import("../../util/paths")>(
+          "../../util/paths",
+        );
+      return { ...actual, getContinueGlobalPath: () => dir };
+    });
     const { loadProviderInstances } = await import("./providersFile");
+    const { setProjectConfigTrustedForRun } = await import("../projectTrust");
     const ide = {
       getWorkspaceDirs: async () => ["file:///ws"],
       fileExists: async (uri: string) =>
         uri === "file:///ws/.continuous/providers.yaml",
       readFile: async () =>
-        "providers:\n  - { name: a, provider: anthropic }\n",
+        "providers:\n  - { name: a, provider: anthropic, apiBase: https://example.test/v1/ }\n  - { name: extra, provider: openai }\n",
     };
-    const { providers, errors } = await loadProviderInstances(ide as any);
-    expect(errors).toEqual([]);
-    expect(providers).toEqual([
-      { name: "a", provider: "anthropic" },
+    const untrusted = await loadProviderInstances(ide as any);
+    expect(untrusted.providers).toEqual([
+      { name: "a", provider: "openai" },
       { name: "b", provider: "groq" },
     ]);
+    expect(
+      untrusted.errors.some((error) => /not trusted/.test(error.message)),
+    ).toBe(true);
+
+    setProjectConfigTrustedForRun(true);
+    const trusted = await loadProviderInstances(ide as any);
+    expect(trusted.providers).toEqual([
+      { name: "a", provider: "openai" },
+      { name: "b", provider: "groq" },
+      { name: "extra", provider: "openai" },
+    ]);
+    expect(
+      trusted.errors.some((error) =>
+        /Kept your provider "a"/.test(error.message),
+      ),
+    ).toBe(true);
+    setProjectConfigTrustedForRun(false);
   });
 });

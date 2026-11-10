@@ -1,3 +1,5 @@
+import { setProjectConfigTrustedForRun } from "core/config/projectTrust.js";
+
 import { HookService } from "../hooks/HookService.js";
 import { setTrustProjectHooksForRun } from "../hooks/hookTrust.js";
 import { initializeWithOnboarding } from "../onboarding.js";
@@ -75,6 +77,9 @@ export async function initializeServices(initOptions: ServiceInitOptions = {}) {
   // The flag is the only way to trust project hooks without recording it.
   // It is read before the hook service loads its settings.
   setTrustProjectHooksForRun(!!commandOptions.trustProjectHooks);
+  // Same for providers, models and other files the project ships. It does not
+  // grant hook trust, and hook trust does not grant this.
+  setProjectConfigTrustedForRun(!!commandOptions.trustProjectConfig);
   // Handle onboarding for TUI mode (headless: false) unless explicitly skipped
   if (!initOptions.headless && !initOptions.skipOnboarding) {
     await initializeWithOnboarding(null, commandOptions.config);
