@@ -5,6 +5,12 @@ import * as fs from "node:fs";
 import net from "node:net";
 import { v4 as uuidv4 } from "uuid";
 
+import {
+  DEV_TCP_HOST,
+  DEV_TCP_TOKEN_ENV,
+  devTcpAuthLine,
+} from "./TcpMessenger";
+
 class IPCMessengerBase<
   ToProtocol extends IProtocol,
   FromProtocol extends IProtocol,
@@ -257,9 +263,13 @@ export class CoreBinaryTcpMessenger<
   typeListeners = new Map<keyof ToProtocol, ((message: Message) => any)[]>();
   idListeners = new Map<string, (message: Message) => any>();
 
-  constructor() {
+  constructor(options?: { port?: number; token?: string }) {
     super();
-    const socket = net.createConnection(this.port, "localhost");
+    this.port = options?.port ?? this.port;
+    const token = options?.token ?? process.env[DEV_TCP_TOKEN_ENV] ?? "";
+    const socket = net.createConnection(this.port, DEV_TCP_HOST);
+    // Queued before any later write, so the server sees the token first.
+    socket.write(devTcpAuthLine(token));
 
     this.socket = socket;
     socket.on("data", (data: Buffer) => {

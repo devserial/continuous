@@ -209,6 +209,7 @@ Messages in the chat history can have different types:
 
 ## Security Considerations
 
-- Server binds to `127.0.0.1` (localhost only)
-- No authentication implemented (local use only)
+- The server listens on `127.0.0.1` unless `--host` says otherwise.
+- Every request must carry `Authorization: Bearer <token>`. If `--token` is omitted, a token is generated and printed at startup. Off loopback, an explicit token must be at least 16 characters. The remote TUI sends `CONTINUOUS_SERVE_TOKEN` when that variable is set.
+- On a loopback bind, the `Host` header must be a loopback name or address. A request that includes an `Origin` header is refused.
 - File system access through tool execution

@@ -40,6 +40,8 @@
       "env": {
         // "CONTROL_PLANE_ENV": "test",
         "CONTINUE_DEVELOPMENT": "true",
+        // Dev control port listens on 127.0.0.1:3000. Set CONTINUE_TCP_TOKEN
+        // here and to the same value in the IDE process. If unset, a token is printed at startup.
         "CONTINUE_GLOBAL_DIR": "${workspaceFolder}/extensions/.continue-debug"
       }
     },

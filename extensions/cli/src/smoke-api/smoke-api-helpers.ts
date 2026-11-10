@@ -140,6 +140,15 @@ export async function runHeadless(
   };
 }
 
+/** Token the smoke server is started with. Every request must send it. */
+export const SMOKE_SERVE_TOKEN = "smoke-serve-token-0123456789";
+
+export function smokeServeHeaders(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return { Authorization: `Bearer ${SMOKE_SERVE_TOKEN}`, ...extra };
+}
+
 /**
  * Spawns `cn serve` as a background subprocess and returns it along with
  * a helper to wait for the server to be ready.
@@ -149,7 +158,10 @@ export function spawnServe(
   args: string[],
   opts: { env?: Record<string, string> } = {},
 ): Subprocess {
-  return execaNode(ctx.cliPath, ["serve", ...args], {
+  const withToken = args.includes("--token")
+    ? args
+    : ["--token", SMOKE_SERVE_TOKEN, ...args];
+  return execaNode(ctx.cliPath, ["serve", ...withToken], {
     cwd: ctx.testDir,
     env: {
       ...process.env,
@@ -222,7 +234,9 @@ export async function pollUntilIdle(
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${baseUrl}/state`);
+      const res = await fetch(`${baseUrl}/state`, {
+        headers: smokeServeHeaders(),
+      });
       if (res.ok) {
         const state = await res.json();
 
@@ -262,7 +276,10 @@ export async function shutdownServe(
   baseUrl: string,
 ): Promise<void> {
   try {
-    await fetch(`${baseUrl}/exit`, { method: "POST" });
+    await fetch(`${baseUrl}/exit`, {
+      method: "POST",
+      headers: smokeServeHeaders(),
+    });
   } catch {
     // server may already be gone
   }

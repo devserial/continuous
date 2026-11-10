@@ -20,8 +20,15 @@ program.action(async () => {
   try {
     let messenger: IMessenger<ToCoreProtocol, FromCoreProtocol>;
     if (process.env.CONTINUE_DEVELOPMENT === "true") {
-      messenger = new TcpMessenger<ToCoreProtocol, FromCoreProtocol>();
-      console.log("[binary] Waiting for connection");
+      const devMessenger = new TcpMessenger<ToCoreProtocol, FromCoreProtocol>();
+      messenger = devMessenger;
+      if (devMessenger.tokenGenerated) {
+        console.log(`[binary] Dev control token: ${devMessenger.token}`);
+        console.log(
+          "[binary] Set CONTINUE_TCP_TOKEN in the connecting process to this value.",
+        );
+      }
+      console.log("[binary] Waiting for an authenticated connection");
       await (
         messenger as TcpMessenger<ToCoreProtocol, FromCoreProtocol>
       ).awaitConnection();

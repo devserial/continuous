@@ -9,6 +9,7 @@ import {
   waitForPattern,
   pollUntilIdle,
   shutdownServe,
+  smokeServeHeaders,
   type SmokeTestContext,
 } from "./smoke-api-helpers.js";
 
@@ -48,7 +49,7 @@ describe.skipIf(!ANTHROPIC_API_KEY)(
       // Send a message
       const msgRes = await fetch(`${baseUrl}/message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: smokeServeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           message: "Reply with exactly the word 'hello' and nothing else.",
         }),
@@ -78,7 +79,10 @@ describe.skipIf(!ANTHROPIC_API_KEY)(
       expect(content?.toLowerCase()).toContain("hello");
 
       // Graceful exit
-      const exitRes = await fetch(`${baseUrl}/exit`, { method: "POST" });
+      const exitRes = await fetch(`${baseUrl}/exit`, {
+        method: "POST",
+        headers: smokeServeHeaders(),
+      });
       expect(exitRes.ok).toBe(true);
     });
   },

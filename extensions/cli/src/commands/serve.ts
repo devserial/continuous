@@ -33,8 +33,9 @@ import { readStdinSync } from "../util/stdin.js";
 
 import { ExtendedCommandOptions } from "./BaseCommandOptions.js";
 import {
-  bearerTokenMiddleware,
   DEFAULT_SERVE_HOST,
+  installServeGuards,
+  resolveServeToken,
   serveBindingProblem,
   type ServerState,
 } from "./serve.helpers.js";
@@ -50,7 +51,7 @@ interface ServeOptions extends ExtendedCommandOptions {
   port?: string;
   /** Interface to listen on; loopback unless told otherwise */
   host?: string;
-  /** Bearer token every request must carry; required off loopback */
+  /** Bearer token every request must carry. Generated and printed when omitted. */
   token?: string;
   /** Storage identifier for remote sync */
   id?: string;
@@ -107,14 +108,14 @@ export async function serve(prompt?: string, options: ServeOptions = {}) {
   const timeoutSeconds = parseInt(options.timeout || "300", 10);
   const timeoutMs = timeoutSeconds * 1000;
   const port = parseInt(options.port || "8000", 10);
-  // Loopback unless told otherwise; any other interface needs a token
-  const bindingProblem = serveBindingProblem(
-    options.host ?? DEFAULT_SERVE_HOST,
-    options.token,
-  );
+  // Loopback unless told otherwise. Every request carries a token; a short
+  // explicit token is refused off loopback, and a missing one is generated.
+  const host = options.host ?? DEFAULT_SERVE_HOST;
+  const bindingProblem = serveBindingProblem(host, options.token);
   if (bindingProblem) {
     throw new Error(bindingProblem);
   }
+  const { token, generated } = resolveServeToken(options.token);
 
   // Environment install script will be deferred until after server startup to avoid blocking
 
@@ -225,11 +226,9 @@ export async function serve(prompt?: string, options: ServeOptions = {}) {
   telemetryService.startActiveTime();
 
   const app = express();
+  // Host and Origin are checked, then the bearer token, before the body is read.
+  installServeGuards(app, { boundHost: host, token });
   app.use(express.json());
-  // Anything that reaches the port can act as the person (messages,
-  // approvals, loop answers), so off loopback every request carries a token
-  const host = options.host ?? DEFAULT_SERVE_HOST;
-  if (options.token) app.use(bearerTokenMiddleware(options.token));
 
   const messageCtx: ServeMessageContext = {
     state,
@@ -355,11 +354,12 @@ export async function serve(prompt?: string, options: ServeOptions = {}) {
 
   const server = app.listen(port, host, async () => {
     console.log(chalk.green(`Server started on http://${host}:${port}`));
-    if (options.token) {
-      console.log(
-        chalk.dim("  Every request needs: Authorization: Bearer <token>"),
-      );
+    if (generated) {
+      console.log(chalk.green(`  Access token: ${token}`));
     }
+    console.log(
+      chalk.dim("  Every request needs: Authorization: Bearer <token>"),
+    );
     console.log(chalk.dim("Endpoints:"));
     console.log(chalk.dim("  GET  /state      - Get current agent state"));
     console.log(

@@ -324,12 +324,12 @@ program
   .option("--port <port>", "Port to run the server on (default: 8000)", "8000")
   .option(
     "--host <host>",
-    "Interface to listen on (default: 127.0.0.1). Anything but loopback needs --token",
+    "Interface to listen on (default: 127.0.0.1). Off loopback, an explicit token must be at least 16 characters",
     "127.0.0.1",
   )
   .option(
     "--token <token>",
-    "Bearer token every request must carry (at least 16 characters); required when --host is not loopback",
+    "Bearer token every request must carry. If omitted, one is generated and printed",
   )
   .option(
     "--id <storageId>",

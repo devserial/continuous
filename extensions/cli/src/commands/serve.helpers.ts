@@ -1,9 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 import chalk from "chalk";
 import type { ChatHistoryItem, Session, ToolStatus } from "core/index.js";
 import { createHistoryItem } from "core/util/messageConversion.js";
-import type { NextFunction, Request, Response } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 
 import {
   describePromptBlocked,
@@ -24,8 +24,10 @@ import { logger } from "../util/logger.js";
  * Where `cn serve` listens, and who may talk to it (plans/policy-areas.md,
  * "cn serve"). The server takes messages, approvals and loop answers, and
  * will take the policy levels, so anything that can reach the port can act
- * as the person. It listens on loopback unless told otherwise, and any other
- * interface needs a token that every request must carry.
+ * as the person. It listens on loopback unless told otherwise. Every request
+ * carries a bearer token, generated and printed when `--token` is omitted.
+ * On loopback the Host header must be a loopback name or address, and a
+ * request that carries an Origin header is refused.
  */
 
 export const DEFAULT_SERVE_HOST = "127.0.0.1";
@@ -46,19 +48,136 @@ export function isLoopbackHost(host: string): boolean {
 
 /**
  * Why the server must not start with these options, or undefined when it
- * may: a host other than loopback with no token would let anything on the
- * network drive the agent.
+ * may. A missing token is filled in with a generated one. An explicit token
+ * shorter than 16 characters is refused when the host is not loopback.
  */
 export function serveBindingProblem(
   host: string,
   token: string | undefined,
 ): string | undefined {
-  if (isLoopbackHost(host)) return undefined;
-  if (token && token.trim().length >= 16) return undefined;
-  if (token) {
-    return `--host ${host} listens beyond this computer, so --token must be at least 16 characters.`;
+  const trimmed = token?.trim() ?? "";
+  if (!trimmed || isLoopbackHost(host) || trimmed.length >= 16) {
+    return undefined;
   }
-  return `--host ${host} listens beyond this computer, so --token <token> is required; every request then carries "Authorization: Bearer <token>".`;
+  return `--host ${host} listens beyond this computer, so --token must be at least 16 characters.`;
+}
+
+/**
+ * The token every request must carry. An omitted or blank `--token` is
+ * replaced with a generated one, which the server prints at startup.
+ */
+export function resolveServeToken(
+  token: string | undefined,
+  generate: () => string = () => randomBytes(24).toString("base64url"),
+): { token: string; generated: boolean } {
+  const trimmed = token?.trim() ?? "";
+  if (trimmed) return { token: trimmed, generated: false };
+  return { token: generate(), generated: true };
+}
+
+/** The host from a Host header, without a port and without IPv6 brackets. */
+export function hostHeaderName(hostHeader: string | undefined): string {
+  const raw = (hostHeader ?? "").trim();
+  if (!raw) return "";
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(raw);
+  if (bracketed) return bracketed[1];
+  // A single colon is host:port. More than one is an IPv6 address.
+  const port = /:(\d+)$/.exec(raw);
+  if (port && raw.indexOf(":") === raw.lastIndexOf(":")) {
+    return raw.slice(0, -port[0].length);
+  }
+  return raw;
+}
+
+const UNSPECIFIED_HOSTS = new Set([
+  "0.0.0.0",
+  "::",
+  "https://example.org/m/orchid",
+]);
+
+/**
+ * Whether this request's Host header is the interface the server bound.
+ * On loopback, only a loopback name or address is accepted.
+ */
+export function hostHeaderAllowed(
+  hostHeader: string | undefined,
+  boundHost: string,
+): boolean {
+  const presented = hostHeaderName(hostHeader);
+  if (!presented) return false;
+  if (isLoopbackHost(boundHost)) return isLoopbackHost(presented);
+  const bound = boundHost
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (UNSPECIFIED_HOSTS.has(bound)) return true;
+  return presented.toLowerCase() === bound;
+}
+
+/** A browser sends Origin. curl and other local clients do not. */
+export function originHeaderAllowed(origin: string | undefined): boolean {
+  return origin === undefined || origin.trim() === "";
+}
+
+export interface ServeRequestProblem {
+  status: 421 | 403;
+  error: string;
+}
+
+/**
+ * Why this request must be refused before it is authenticated, or undefined
+ * when the Host and Origin headers are acceptable.
+ */
+export function serveRequestProblem(
+  headers: { host?: string; origin?: string },
+  boundHost: string,
+): ServeRequestProblem | undefined {
+  if (!hostHeaderAllowed(headers.host, boundHost)) {
+    return {
+      status: 421,
+      error: isLoopbackHost(boundHost)
+        ? "The Host header must be the loopback name or address this server is bound to."
+        : "The Host header must match the address this server is bound to.",
+    };
+  }
+  if (!originHeaderAllowed(headers.origin)) {
+    return {
+      status: 403,
+      error: "Requests that carry an Origin header are refused.",
+    };
+  }
+  return undefined;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
+/**
+ * Refuse a request whose Host is not the bound loopback name or address, or
+ * that carries an Origin header, then require the bearer token.
+ */
+export function installServeGuards(
+  app: Express,
+  options: { boundHost: string; token: string },
+): void {
+  const { boundHost, token } = options;
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const problem = serveRequestProblem(
+      {
+        host: headerValue(req.headers.host),
+        origin: headerValue(req.headers.origin),
+      },
+      boundHost,
+    );
+    if (problem) {
+      res.status(problem.status).json({ error: problem.error });
+      return;
+    }
+    next();
+  });
+  app.use(bearerTokenMiddleware(token));
 }
 
 /** Whether a request's Authorization header carries the token, compared in constant time. */

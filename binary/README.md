@@ -28,7 +28,7 @@ The build process is otherwise defined entirely in `build.js`.
 
 ## Debugging
 
-To debug the binary with IntelliJ, set `useTcp` to `true` in `CoreMessenger.kt`, and then in VS Code run the "Core Binary" debug script. Instead of starting a subprocess for the binary and communicating over stdin/stdout, the IntelliJ extension will connect over TCP to the server started from the VS Code window. You can place breakpoints anywhere in the `core` or `binary` folders.
+To debug the binary with IntelliJ, set `USE_TCP` to `true` for the IDE process and set the same `CONTINUE_TCP_TOKEN` (at least 16 characters) on that process and on the core process. Then in VS Code run the "Core Binary" debug script. The core listens on `127.0.0.1:3000` and accepts only a connection that presents that token. If the core is started without `CONTINUE_TCP_TOKEN`, it generates one and prints it; copy that value into the IDE process. You can place breakpoints anywhere in the `core` or `binary` folders.
 
 ## Building
 

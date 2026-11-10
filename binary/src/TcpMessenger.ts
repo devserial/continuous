@@ -1,43 +1,186 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { IProtocol } from "core/protocol";
 import { IMessenger, Message } from "core/protocol/messenger";
 import net from "net";
 import { v4 as uuidv4 } from "uuid";
 
+/** Dev control port. It is only reachable on this machine. */
+export const DEV_TCP_HOST = "127.0.0.1";
+export const DEV_TCP_PORT = 3000;
+/** Shared with the IDE process that connects. */
+export const DEV_TCP_TOKEN_ENV = "CONTINUE_TCP_TOKEN";
+const AUTH_MESSAGE_TYPE = "tcpAuth";
+const MAX_AUTH_BYTES = 4096;
+
+/**
+ * The token for the dev control port. A blank value is replaced with a
+ * generated one, which the process prints. A short explicit value is refused.
+ */
+export function resolveDevTcpToken(value: string | undefined): {
+  token: string;
+  generated: boolean;
+} {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return { token: randomBytes(24).toString("base64url"), generated: true };
+  }
+  if (trimmed.length < 16) {
+    throw new Error(`${DEV_TCP_TOKEN_ENV} must be at least 16 characters.`);
+  }
+  return { token: trimmed, generated: false };
+}
+
+/** The first line a client sends. The line ends with CR LF. */
+export function devTcpAuthLine(token: string): string {
+  return (
+    JSON.stringify({
+      messageType: AUTH_MESSAGE_TYPE,
+      messageId: "auth",
+      data: token,
+    }) + "\r\n"
+  );
+}
+
+function tokensEqual(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
+}
+
+/** Whether this line is the auth line for the token. */
+export function devTcpAuthLineMatches(line: string, token: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+  const message = parsed as { messageType?: unknown; data?: unknown };
+  if (
+    message.messageType !== AUTH_MESSAGE_TYPE ||
+    typeof message.data !== "string"
+  ) {
+    return false;
+  }
+  return tokensEqual(message.data, token);
+}
+
 export class TcpMessenger<
   ToProtocol extends IProtocol,
   FromProtocol extends IProtocol,
 > implements IMessenger<ToProtocol, FromProtocol> {
-  private port: number = 3000;
-  private host: string = "127.0.0.1";
+  private port: number;
   private socket: net.Socket | null = null;
+  private server: net.Server;
+  private buffers = new Map<net.Socket, string>();
+  private retired = new WeakSet<net.Socket>();
+  readonly token: string;
+  readonly tokenGenerated: boolean;
+  readonly ready: Promise<void>;
 
   typeListeners = new Map<keyof ToProtocol, ((message: Message) => any)[]>();
   idListeners = new Map<string, (message: Message) => any>();
 
-  constructor() {
-    const server = net.createServer((socket) => {
-      this.socket = socket;
+  constructor(options?: { port?: number; token?: string }) {
+    this.port = options?.port ?? DEV_TCP_PORT;
+    const resolved = resolveDevTcpToken(
+      options && "token" in options
+        ? options.token
+        : process.env[DEV_TCP_TOKEN_ENV],
+    );
+    this.token = resolved.token;
+    this.tokenGenerated = resolved.generated;
 
-      socket.on("connect", () => {
-        console.log("Connected to server");
+    let settled = false;
+    this.server = net.createServer((socket) => this.handleConnection(socket));
+    this.ready = new Promise((resolve, reject) => {
+      this.server.on("error", (err) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+          return;
+        }
+        console.error("[binary] Dev control port error:", err);
       });
+      this.server.listen(this.port, DEV_TCP_HOST, () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      });
+    });
+  }
 
-      socket.on("data", (data: Buffer) => {
+  /** The address the server actually bound, once `ready` has resolved. */
+  address(): { address: string; port: number } | null {
+    const addr = this.server.address();
+    if (!addr || typeof addr === "string") return null;
+    return { address: addr.address, port: addr.port };
+  }
+
+  close(): Promise<void> {
+    this.socket?.destroy();
+    this.socket = null;
+    for (const pending of this.buffers.keys()) pending.destroy();
+    this.buffers.clear();
+    return new Promise((resolve) => {
+      this.server.close(() => resolve());
+    });
+  }
+
+  private handleConnection(socket: net.Socket) {
+    this.buffers.set(socket, "");
+    socket.on("data", (data: Buffer) => {
+      if (this.retired.has(socket)) return;
+      if (socket === this.socket) {
         this._handleData(data);
-      });
-
-      socket.on("end", () => {
-        console.log("Disconnected from server");
-      });
-
-      socket.on("error", (err: any) => {
-        console.error("Client error:", err);
-      });
+        return;
+      }
+      this.handleAuthData(socket, data);
     });
-
-    server.listen(this.port, this.host, () => {
-      console.log(`Server listening on port ${this.port}`);
+    const forget = () => {
+      this.buffers.delete(socket);
+      if (this.socket === socket) this.socket = null;
+    };
+    socket.on("end", () => {
+      if (this.socket === socket) console.log("Disconnected from server");
+      forget();
     });
+    socket.on("close", forget);
+    socket.on("error", (err: Error) => {
+      if (socket === this.socket) console.error("Client error:", err);
+      forget();
+    });
+  }
+
+  private handleAuthData(socket: net.Socket, data: Buffer) {
+    const buffered = (this.buffers.get(socket) ?? "") + data.toString("utf8");
+    const splitAt = buffered.indexOf("\r\n");
+    if (splitAt === -1) {
+      if (buffered.length > MAX_AUTH_BYTES) {
+        this.buffers.delete(socket);
+        socket.destroy();
+        return;
+      }
+      this.buffers.set(socket, buffered);
+      return;
+    }
+    const line = buffered.slice(0, splitAt);
+    const rest = buffered.slice(splitAt + 2);
+    this.buffers.delete(socket);
+    if (!devTcpAuthLineMatches(line, this.token)) {
+      socket.destroy();
+      return;
+    }
+    const previous = this.socket;
+    this._unfinishedLine = undefined;
+    this.socket = socket;
+    if (previous && previous !== socket) {
+      this.retired.add(previous);
+      previous.destroy();
+    }
+    if (rest.length > 0) this._handleData(Buffer.from(rest, "utf8"));
   }
 
   private _onErrorHandlers: ((message: Message, error: Error) => void)[] = [];

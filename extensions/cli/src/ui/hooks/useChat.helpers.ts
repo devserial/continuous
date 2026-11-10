@@ -11,6 +11,7 @@ import { loadSession, startNewSession } from "../../session.js";
 import { telemetryService } from "../../telemetry/telemetryService.js";
 
 import { processImagePlaceholder } from "./useChat.imageProcessing.js";
+import { remoteFetch } from "./useChat.remote.helpers.js";
 import { SlashCommandResult } from "./useChat.types.js";
 
 /**
@@ -263,7 +264,7 @@ async function handleRemoteDiffCommand(
   onShowDiff?: (diffContent: string) => void,
 ): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/diff`);
+    const response = await remoteFetch(`${remoteUrl}/diff`);
     if (!response.ok) {
       throw new Error(`Failed to fetch diff: ${response.statusText}`);
     }
@@ -290,7 +291,7 @@ async function handleRemoteApplyCommand(
   onShowStatusMessage?: (message: string) => void,
 ): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/diff`);
+    const response = await remoteFetch(`${remoteUrl}/diff`);
     if (!response.ok) {
       throw new Error(`Failed to fetch diff: ${response.statusText}`);
     }

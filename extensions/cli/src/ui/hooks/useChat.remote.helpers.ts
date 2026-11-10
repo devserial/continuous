@@ -5,6 +5,45 @@ import { logger } from "../../util/logger.js";
 
 import { RemoteServerState } from "./useChat.types.js";
 
+/**
+ * Request options for `cn serve`. When `CONTINUOUS_SERVE_TOKEN` is set, the
+ * remote TUI sends it as a bearer token. With no token, the options are unchanged.
+ */
+export function remoteRequestInit(init?: RequestInit): RequestInit | undefined {
+  const token = process.env.CONTINUOUS_SERVE_TOKEN?.trim();
+  if (!token) return init;
+  return {
+    ...init,
+    headers: {
+      ...headersRecord(init?.headers),
+      Authorization: `Bearer ${token}`,
+    },
+  };
+}
+
+export function remoteFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const authed = remoteRequestInit(init);
+  return authed === undefined ? fetch(url) : fetch(url, authed);
+}
+
+function headersRecord(
+  headers: RequestInit["headers"],
+): Record<string, string> {
+  if (!headers) return {};
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  if (headers instanceof Headers) {
+    const record: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+  return { ...headers };
+}
+
 function historiesEqual(a: ChatHistoryItem[], b: ChatHistoryItem[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -20,7 +59,7 @@ async function pollRemoteServerState(
   remoteUrl: string,
 ): Promise<RemoteServerState | null> {
   try {
-    const response = await fetch(`${remoteUrl}/state`);
+    const response = await remoteFetch(`${remoteUrl}/state`);
     if (!response.ok) {
       throw new Error(`Failed to fetch state: ${response.statusText}`);
     }
@@ -135,9 +174,7 @@ export async function handleRemoteExit(
   exit: () => void,
 ): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/exit`, {
-      method: "POST",
-    });
+    const response = await remoteFetch(`${remoteUrl}/exit`, { method: "POST" });
 
     if (response.ok) {
       try {
@@ -180,7 +217,7 @@ export async function handleRemoteMessage({
   messageContent,
 }: HandleRemoteMessageOptions): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/message`, {
+    const response = await remoteFetch(`${remoteUrl}/message`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -212,7 +249,7 @@ export async function handleRemoteMessage({
  */
 export async function handleRemoteDiff(remoteUrl: string): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/diff`);
+    const response = await remoteFetch(`${remoteUrl}/diff`);
     if (!response.ok) {
       throw new Error(`Failed to fetch diff: ${response.statusText}`);
     }
@@ -245,7 +282,7 @@ export async function handleRemoteDiff(remoteUrl: string): Promise<void> {
  */
 export async function handleRemoteApply(remoteUrl: string): Promise<void> {
   try {
-    const response = await fetch(`${remoteUrl}/diff`);
+    const response = await remoteFetch(`${remoteUrl}/diff`);
     if (!response.ok) {
       throw new Error(`Failed to fetch diff: ${response.statusText}`);
     }
@@ -298,7 +335,7 @@ export async function handleRemoteApply(remoteUrl: string): Promise<void> {
  */
 export async function sendRemoteInterrupt(remoteUrl: string): Promise<void> {
   try {
-    await fetch(`${remoteUrl}/pause`, { method: "POST" });
+    await remoteFetch(`${remoteUrl}/pause`, { method: "POST" });
   } catch (error) {
     logger.error("Failed to send interrupt to remote server:", error);
   }
