@@ -110,6 +110,20 @@ describe("commandCandidates", () => {
     expect(commandCandidates(c).length).toBeLessThan(2000);
     expect(Date.now() - t).toBeLessThan(2000);
   });
+  it("sees a command rebuilt with an assignment, braces, or IFS", () => {
+    has("export G=git; $G push", "git push");
+    has("declare G=git; $G push", "git push");
+    has("declare -x G=git; $G push", "git push");
+    has("typeset G=git; $G push", "git push");
+    has("local G=git; $G push", "git push");
+    has("readonly G=git; $G push", "git push");
+    has("G=git; H=$G; $H push", "git push");
+    has("printf -v G git; $G push", "git push");
+    has("{git,push}", "git push");
+    has("git${IFS}push", "git push");
+    has("git$IFS'push'", "git push");
+    has(`awk 'BEGIN{system("git push")}'`, "git push");
+  });
   it("does not invent a git push out of a longer word", () => {
     expect(commandCandidates("git pushover")).not.toContain("git push");
     expect(commandCandidates("echo git push")).not.toContain("git push origin");

@@ -1,7 +1,11 @@
 import * as os from "node:os";
 import { commandCandidates } from "./candidates";
 import { ProtectedHit, ProtectedKind, protectedPathHit } from "./protected";
-import { isNetworkPath, secretWordLabel } from "./secretCommands";
+import {
+  isNetworkPath,
+  jqEnvironmentLabel,
+  secretWordLabel,
+} from "./secretCommands";
 
 const strip = (s: string) =>
   s.replace(/^[<>&|]+/, "").replace(/^['"]+|['"]+$/g, "");
@@ -57,6 +61,8 @@ export function protectedCommandHit(
     }
   }
   for (const words of skip.includes("secret") ? [] : candidateWords(command)) {
+    const jq = jqEnvironmentLabel(words);
+    if (jq) return { kind: "secret", path: jq };
     for (let i = 0; i < words.length; i++) {
       const label = secretWordLabel(
         words[i],

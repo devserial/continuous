@@ -79,6 +79,20 @@ export function secretWordLabel(
 }
 
 /**
+ * jq's `env` and `$ENV` print the process environment. A field named `.env`
+ * does not: the builtin is an identifier, not a lookup that starts with a dot.
+ */
+export function jqEnvironmentLabel(words: string[]): string | undefined {
+  const at = words.findIndex((w) => /(^|\/)jq$/i.test(w));
+  if (at < 0) return undefined;
+  const program = words.slice(at + 1).join(" ");
+  if (/\$ENV\b/.test(program) || /(^|[^.\w$])env\b/.test(program)) {
+    return "the environment variables (jq)";
+  }
+  return undefined;
+}
+
+/**
  * A network path: `\\host\share` or `//host/share` (UNC) and the `/net/`
  * automount. Looking one up contacts the host, and on Windows that can send
  * the user's credentials to it. Check the raw text: normalising a path

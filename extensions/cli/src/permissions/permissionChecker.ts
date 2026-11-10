@@ -6,8 +6,133 @@ import {
   PermissionCheckResult,
   PermissionPolicy,
   ToolCallRequest,
+  ToolPermissionPolicy,
   ToolPermissions,
 } from "./types.js";
+
+function wildcardRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regexPattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${regexPattern}$`);
+}
+
+function readQuoted(
+  command: string,
+  start: number,
+  quote: "'" | '"',
+): { end: number; text: string; closed: boolean } {
+  let text = "";
+  for (let j = start; j < command.length; j++) {
+    const c = command[j];
+    text += c;
+    if (c === "\\" && quote === '"' && j + 1 < command.length) {
+      text += command[++j];
+      continue;
+    }
+    if (c === quote) return { end: j, text, closed: true };
+  }
+  return { end: command.length, text, closed: false };
+}
+
+/** A command separator, or a redirect that an allow rule must not cover. */
+function operatorSpan(
+  command: string,
+  i: number,
+): { span: number; split: boolean; redirect: boolean } | undefined {
+  const c = command[i];
+  const next = command[i + 1];
+  if (c === "\n" || c === ";") return { span: 1, split: true, redirect: false };
+  if (c === "&" && next === "&")
+    return { span: 2, split: true, redirect: false };
+  if (c === "|" && (next === "|" || next === "&")) {
+    return { span: 2, split: true, redirect: false };
+  }
+  if (c === "|") return { span: 1, split: true, redirect: false };
+  if (c === "&") {
+    const prev = command[i - 1];
+    if (prev === ">" || prev === "<") return undefined;
+    if (next === ">") return { span: 1, split: false, redirect: true };
+    return { span: 1, split: true, redirect: false };
+  }
+  if (c === ">" || c === "<") {
+    const dup = next === "&" && /[\d-]/.test(command[i + 2] ?? "");
+    if (dup) return undefined;
+    return { span: 1, split: false, redirect: true };
+  }
+  return undefined;
+}
+
+/**
+ * Segments an allow rule may cover. Undefined when the text hides another
+ * command: a separator the pattern's `*` would swallow, a substitution, or a
+ * redirect. Ask and exclude rules do not use this; they match the whole text.
+ */
+function allowCommandSegments(command: string): string[] | undefined {
+  if (/\$\(|`|<\(|>\(/.test(command) || /\$\{?IFS\b/.test(command)) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  let cur = "";
+  let redirect = false;
+  let unparsable = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === "'" || c === '"') {
+      const quoted = readQuoted(command, i + 1, c);
+      cur += c + quoted.text;
+      i = quoted.end;
+      if (!quoted.closed) unparsable = true;
+      continue;
+    }
+    if (c === "\\") {
+      if (i + 1 >= command.length) unparsable = true;
+      else cur += command[i] + command[++i];
+      continue;
+    }
+    const op = operatorSpan(command, i);
+    if (!op) {
+      cur += c;
+      continue;
+    }
+    if (op.split) {
+      const t = cur.trim();
+      if (t) parts.push(t);
+      cur = "";
+    } else {
+      cur += command.slice(i, i + op.span);
+    }
+    if (op.redirect) redirect = true;
+    i += op.span - 1;
+  }
+  const tail = cur.trim();
+  if (tail) parts.push(tail);
+  if (unparsable || redirect || parts.length === 0) return undefined;
+  return parts;
+}
+
+/** The command glob on an allow rule, from `Bash(git status*)` or `command:`. */
+function allowCommandPattern(
+  policy: ToolPermissionPolicy,
+  toolName: string,
+): string | undefined {
+  const bash = /^Bash\((.+)\)$/.exec(policy.tool);
+  if (bash) return bash[1];
+  if (
+    toolName === "Bash" &&
+    typeof policy.argumentMatches?.command === "string"
+  ) {
+    return policy.argumentMatches.command;
+  }
+  return undefined;
+}
+
+/** True when every simple command matches the prefix. A hidden command does not. */
+function allowCoversCommand(pattern: string, command: string): boolean {
+  const segments = allowCommandSegments(command);
+  if (!segments) return false;
+  const regex = wildcardRegex(pattern);
+  return segments.every((segment) => regex.test(segment));
+}
 
 /**
  * Checks if a tool name matches a pattern.
@@ -33,12 +158,7 @@ export function matchesToolPattern(
 
       // Handle command patterns with wildcards
       if (commandPattern.includes("*") || commandPattern.includes("?")) {
-        // Escape all regex metacharacters except * and ?
-        const escaped = commandPattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-        // Convert * and ? to their regex equivalents
-        const regexPattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
-        const regex = new RegExp(`^${regexPattern}$`);
-        return regex.test(command);
+        return wildcardRegex(commandPattern).test(command);
       }
 
       // Exact command match
@@ -83,13 +203,7 @@ export function matchesArguments(
       // Convert argValue to string for pattern matching
       const stringValue = String(argValue ?? "");
 
-      // Escape all regex metacharacters except * and ?
-      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-      // Convert * and ? to their regex equivalents
-      const regexPattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
-      const regex = new RegExp(`^${regexPattern}$`);
-
-      if (!regex.test(stringValue)) {
+      if (!wildcardRegex(pattern).test(stringValue)) {
         return false;
       }
     } else {
@@ -140,6 +254,18 @@ export function checkToolPermission(
       matchesToolPattern(toolCall.name, policy.tool, toolCall.arguments) &&
       matchesArguments(toolCall.arguments, policy.argumentMatches)
     ) {
+      // A prefix allow covers each simple command, not a compound line.
+      if (policy.permission === "allow") {
+        const pattern = allowCommandPattern(policy, toolCall.name);
+        const command = toolCall.arguments?.command;
+        if (
+          pattern !== undefined &&
+          typeof command === "string" &&
+          !allowCoversCommand(pattern, command)
+        ) {
+          continue;
+        }
+      }
       basePermission = policy.permission;
       matchedPolicy = policy;
       break;
@@ -166,7 +292,8 @@ export function checkToolPermission(
       };
     }
 
-    // Otherwise, user preference wins - return the original base permission
+    // A matched allow stands. Prefix allows never match a compound command,
+    // so this does not approve one the pattern did not cover.
     return {
       permission: basePermission,
       matchedPolicy,

@@ -90,7 +90,97 @@ function nested(
     if (k >= 0 && tail[k + 1]) {
       for (const lit of quotedLiterals(tail[k + 1])) run(lit);
     }
+  } else if (
+    name === "awk" ||
+    name === "gawk" ||
+    name === "nawk" ||
+    name === "mawk"
+  ) {
+    const systemCall = /system\s*\(\s*(["'])([\s\S]*?)\1\s*\)/g;
+    for (const w of tail) {
+      for (const s of [w, ...quotedLiterals(w)]) {
+        systemCall.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = systemCall.exec(s))) run(m[2]);
+      }
+    }
   }
+}
+
+const ASSIGN_KEYWORD = /^(?:export|declare|typeset|local|readonly)\b\s+/;
+
+/** `NAME=value`, including `export`/`declare` and their flags. The whole part must be the assignment. */
+function assignmentOf(part: string): [string, string] | undefined {
+  let body = part.trim();
+  if (ASSIGN_KEYWORD.test(body)) {
+    body = body.replace(ASSIGN_KEYWORD, "");
+    body = body.replace(/^(?:-[A-Za-z]+\s+)+/, "");
+  }
+  const m = /^([A-Za-z_]\w*)=((?:\S)*)$/.exec(body);
+  if (!m) return undefined;
+  return [m[1], dequote(m[2])];
+}
+
+/** `printf -v NAME value` assigns NAME, the same as `NAME=value`. */
+function printfAssignment(part: string): [string, string] | undefined {
+  const words = splitRawWords(part).map(unquoteWord);
+  if (words[0] !== "printf") return undefined;
+  const v = words.findIndex((w, i) => i > 0 && w === "-v");
+  if (v < 0 || words[v + 1] === undefined || words[v + 2] === undefined) {
+    return undefined;
+  }
+  return [words[v + 1], words[v + 2]];
+}
+
+/** Replace known variables and `$IFS`, repeatedly, so `H=$G` then `$H` resolves. */
+function expandKnown(text: string, vars: Record<string, string>): string {
+  let cur = text;
+  for (let n = 0; n < 8; n++) {
+    const next = cur
+      .replace(/\$\{IFS\}|\$IFS/g, " ")
+      .replace(
+        /\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g,
+        (s, braced: string | undefined, plain: string | undefined) => {
+          const name = braced || plain || "";
+          return Object.prototype.hasOwnProperty.call(vars, name)
+            ? vars[name]
+            : s;
+        },
+      );
+    if (next === cur) return cur;
+    cur = next;
+  }
+  return cur;
+}
+
+/** `{git,push}` is the words `git` and `push`. Quoted braces are left alone. */
+function expandBraceWord(word: string): string[] {
+  if (word.startsWith("'") || word.startsWith('"')) return [word];
+  const m = /^((?:[^{}\\]|\\.)*)\{([^{}]*)\}(.*)$/.exec(word);
+  if (!m || !m[2].includes(",")) return [word];
+  const alts = m[2].split(",");
+  if (alts.length > 16) return [word];
+  const out: string[] = [];
+  for (const alt of alts) {
+    for (const next of expandBraceWord(m[1] + alt + m[3])) {
+      out.push(next);
+      if (out.length > 32) return [word];
+    }
+  }
+  return out;
+}
+
+function expandBraces(part: string): string | undefined {
+  const words = splitRawWords(part);
+  if (words.length === 0) return undefined;
+  let changed = false;
+  const expanded: string[] = [];
+  for (const w of words) {
+    const pieces = expandBraceWord(w);
+    if (pieces.length !== 1 || pieces[0] !== w) changed = true;
+    expanded.push(...pieces);
+  }
+  return changed ? expanded.map(unquoteWord).join(" ") : undefined;
 }
 
 function addPart(part: string, depth: number, out: Set<string>): void {
@@ -130,14 +220,14 @@ function addCommand(command: string, depth: number, out: Set<string>): void {
 
   for (const p of parts) {
     addPart(p, depth, out);
-    const assign = /^([A-Za-z_]\w*)=(\S*)$/.exec(p);
-    if (assign) {
-      vars[assign[1]] = dequote(assign[2]);
-    } else if (/\$/.test(p) && Object.keys(vars).length > 0) {
-      const expanded = p.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (s, n) =>
-        n in vars ? vars[n] : s,
-      );
-      if (expanded !== p) addPart(expanded, depth, out);
+    const assign = assignmentOf(p) ?? printfAssignment(p);
+    if (assign) vars[assign[0]] = expandKnown(assign[1], vars);
+    if (/[$\{]/.test(p)) {
+      const expanded = expandKnown(p, vars);
+      const text = expanded;
+      if (text !== p) addPart(text, depth, out);
+      const braced = expandBraces(text);
+      if (braced && braced !== text) addPart(braced, depth, out);
     }
   }
   if (depth >= MAX_DEPTH) return;

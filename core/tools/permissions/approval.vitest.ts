@@ -199,6 +199,42 @@ describe("Permissive", () => {
   });
 });
 
+describe("obfuscated commands the safety floor cannot see", () => {
+  const handsOff = levels({
+    tools: "permissive",
+    context: "permissive",
+    edits: "permissive",
+    plan: "permissive",
+    questions: "permissive",
+  });
+  const yolo = levels({
+    tools: "yolo",
+    context: "yolo",
+    edits: "yolo",
+    plan: "yolo",
+    questions: "yolo",
+  });
+
+  it.each(["{rm,-rf,~}", "rm${IFS}-rf${IFS}~", "G=rm; $G -rf ~"])(
+    "does not run %s under Hands-off or YOLO",
+    (command) => {
+      expect(cmd(command, handsOff).policy).toBe(OFF);
+      expect(cmd(command, yolo).policy).toBe(OFF);
+    },
+  );
+
+  it("still runs an ordinary command under Hands-off and a clear refusal under YOLO", () => {
+    expect(cmd("git push origin main", handsOff).policy).toBe(ALLOW);
+    expect(cmd("echo $HOME", handsOff).policy).toBe(ALLOW);
+    expect(cmd("rm -rf /", yolo).policy).toBe(ALLOW);
+  });
+
+  it("does not run a substitution the floor only asks about", () => {
+    expect(cmd("echo $(date)", handsOff).policy).toBe(ASK);
+    expect(cmd("echo $(date)", yolo).policy).toBe(ASK);
+  });
+});
+
 describe("YOLO", () => {
   const yolo = levels({ tools: "yolo", context: "yolo", edits: "yolo" });
 

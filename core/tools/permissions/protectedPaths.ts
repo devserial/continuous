@@ -79,7 +79,9 @@ const SECRET_EXTENSIONS = new Set([
 const SYSTEM_SECRET = [
   /^\/etc\/(shadow|gshadow|sudoers|ssh\/ssh_host_[a-z0-9_]+_key)$/,
   /^\/etc\/sudoers\.d(\/|$)/,
-  /^\/proc\/(self|\d+)\/(environ|mem|maps)$/,
+  /^\/proc\/(self|thread-self|\d+)\/(mem|maps)$/,
+  // Any /proc/<pid-or-thread>/environ, including task subdirectories.
+  /^\/proc\/(?:[^/]+\/)+environ$/,
   /^\/(var\/)?root\/\.(ssh|aws|gnupg)(\/|$)/,
   /^\/home\/[^/]+\/\.(ssh|aws|gnupg|kube|azure|docker)(\/|$)/,
   /^\/users\/[^/]+\/\.(ssh|aws|gnupg|kube|azure|docker)(\/|$)/i,

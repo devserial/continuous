@@ -16,6 +16,14 @@ describe("deny and ask rules over-match on purpose", () => {
     ["npm test && git push"],
     ["npm test & git push"],
     ["echo hi | xargs echo; git push"],
+    ["export G=git; $G push"],
+    ["declare G=git; $G push"],
+    ["G=git; H=$G; $H push"],
+    ["printf -v G git; $G push"],
+    ["{git,push}"],
+    ["git${IFS}push"],
+    ["git$IFS'push'"],
+    [`awk 'BEGIN{system("git push")}'`],
   ])("denies %s", (cmd) => {
     expect(decide(deny, cmd)).toBe("deny");
   });

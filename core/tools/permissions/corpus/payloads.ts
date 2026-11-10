@@ -60,6 +60,9 @@ export const SECRET_READS: [string, boolean][] = [
   ["cert.pfx", true],
   ["/etc/shadow", true],
   ["/proc/self/environ", true],
+  ["/proc/thread-self/environ", true],
+  ["/proc/42/environ", true],
+  ["/proc/self/task/9/environ", true],
   ["src/index.ts", false],
   ["README.md", false],
   ["docs/keys.md", false],
@@ -107,6 +110,10 @@ export const CONFIG_WRITES: [string, boolean][] = [
 /** Commands that print or send credentials without naming a secret file. true = must ask. */
 export const SECRET_COMMANDS: [string, boolean][] = [
   ["cat /proc/self/environ", true],
+  ["cat /proc/thread-self/environ", true],
+  ["jq -n '$ENV'", true],
+  ["jq -n env.X", true],
+  ["jq '.environment'", false],
   ["dir env:", true],
   ["echo %AWS_SECRET_ACCESS_KEY%", true],
   ["echo $AWS_SECRET_ACCESS_KEY", true],

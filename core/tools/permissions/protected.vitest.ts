@@ -59,6 +59,10 @@ describe("secret paths", () => {
     ".npmrc",
     "deploy/.netrc",
     "keys/id_ed25519",
+    "/proc/self/environ",
+    "/proc/thread-self/environ",
+    "/proc/42/environ",
+    "/proc/self/task/9/environ",
   ])("%s is secret", (p) => {
     expect(hit(p)).toBe("secret");
   });

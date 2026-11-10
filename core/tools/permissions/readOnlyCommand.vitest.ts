@@ -51,6 +51,11 @@ describe("commands that only read", () => {
     "git branch --list",
     "git --no-pager log",
     "git stash list",
+    "git stash show",
+    "git grep -n TODO src",
+    "sort -u file.txt",
+    "uniq file.txt",
+    "uniq -c file.txt",
   ])("vouches %s", (command) => {
     expect(vouched(command)).toBe(true);
   });
@@ -129,7 +134,14 @@ describe("arguments that make a read-only command write or run", () => {
     ["find . -exec ls x +", "-exec"],
     ["find . -fprint out.txt", "-fprint"],
     ["sort -o out.txt in.txt", "-o"],
+    ["sort -o/tmp/x f", "-o"],
+    ["sort -uo out.txt", "-o"],
     ["sort --output=out.txt in.txt", "--output"],
+    ["sort --outp=src/index.js f", "--outp"],
+    ["sort --compress-prog=sh f", "--compress-prog"],
+    ["tree -o/tmp/x", "-o"],
+    ["tail --fol x", "--fol"],
+    ["date --se=now", "--se"],
     ["rg --pre ./x pattern", "--pre"],
     ["sed -i s/a/b/ f", "sed"],
     ["sed -n 'w out.txt' f", "print range"],
@@ -138,11 +150,41 @@ describe("arguments that make a read-only command write or run", () => {
     ["tail -f log.txt", "-f"],
     ["date -s 12:00", "-s"],
     ["uniq in.txt out.txt", "written"],
+    ["uniq - package.json", "written"],
+    ["uniq -- in.txt out.txt", "written"],
     ["jq -f prog.jq data.json", "-f"],
     ["hostname newname", "hostname"],
   ])("%s", (command, reason) => {
     expect(vouched(command)).toBe(false);
     expect(why(command)).toContain(reason);
+  });
+});
+
+describe("globs the shell expands", () => {
+  it.each([
+    "rg TODO *",
+    "rg pattern *.txt",
+    "sort *.txt",
+    "git grep TODO *",
+    "find . -name *.ts",
+    "ls *.ts | rg TODO *",
+  ])("does not vouch %s", (command) => {
+    expect(vouched(command)).toBe(false);
+    expect(why(command)).toContain("glob");
+  });
+
+  it.each([
+    "ls *",
+    "ls *.ts",
+    "cat *.md",
+    "head *.txt",
+    "wc *",
+    "rg --files -g '*.ts'",
+    "find . -name '*.ts' -type f",
+    "rg TODO -- *",
+    "ls *.ts | head",
+  ])("still vouches %s", (command) => {
+    expect(vouched(command)).toBe(true);
   });
 });
 
@@ -201,10 +243,116 @@ describe("git", () => {
     '[filter "lfs"]\n\tclean = git-lfs clean\n',
     "[include]\n\tpath = /tmp/more\n",
     '[includeIf "gitdir:~/"]\n\tpath = x\n',
+    "[core]fsmonitor=touch /tmp/x",
+    "[core] fsmonitor = touch /tmp/x",
+    "[core]\n\tpager = less\n",
+    "[pager]\n\tstatus = less\n",
+    '[diff "x"]\n\tcommand = cat\n',
+    '[diff "x"] command = cat\n',
+    "[core]\n\talternateRefsCommand = cat\n",
+    "# fsmonitor is only a comment\n[core]fsmonitor=x\n",
   ])("is not vouched when a config can run programs: %s", (config) => {
     const opts = { ...CLEAN, readGitConfig: () => config };
     expect(vouched("git status", opts)).toBe(false);
     expect(why("git log", opts)).toContain("can run programs");
+  });
+
+  it("a comment that only mentions a dangerous key does not count", () => {
+    expect(
+      vouched("git status", {
+        ...CLEAN,
+        readGitConfig: () =>
+          "# fsmonitor = x\n; pager = less\n[core]\n\tbare = false\n",
+      }),
+    ).toBe(true);
+  });
+
+  it("reads the worktree config, the system file, and the XDG file", () => {
+    const seen: string[] = [];
+    const opts: ReadOnlyOptions = {
+      ...CLEAN,
+      env: { XDG_CONFIG_HOME: "/xdg", GIT_CONFIG_SYSTEM: "/etc/gitconfig" },
+      readGitConfig: (file) => {
+        seen.push(posix(file));
+        return posix(file).endsWith("/.git/config.worktree")
+          ? "[core]fsmonitor=x\n"
+          : "[core]\n\tbare = false\n";
+      },
+    };
+    expect(vouched("git status", opts)).toBe(false);
+    expect(seen.some((f) => f.endsWith("/.git/config.worktree"))).toBe(true);
+    expect(seen).toContain("/etc/gitconfig");
+    expect(seen).toContain("/xdg/git/config");
+  });
+
+  it("reads an include target, including one named by includeIf", () => {
+    const included = (file: string, marker: string) => {
+      const seen: string[] = [];
+      const opts: ReadOnlyOptions = {
+        ...CLEAN,
+        env: {},
+        readGitConfig: (f) => {
+          const p = posix(f);
+          seen.push(p);
+          if (p.endsWith(file)) return marker;
+          if (p.endsWith("/included.conf") || p.endsWith("/extra.conf")) {
+            return "[core]\n\tfsmonitor = x\n";
+          }
+          return "";
+        },
+      };
+      expect(vouched("git status", opts)).toBe(false);
+      return seen;
+    };
+    expect(
+      included("/.git/config", "[include]\n\tpath = ../included.conf\n").some(
+        (f) => f.endsWith("/included.conf"),
+      ),
+    ).toBe(true);
+    expect(
+      included(
+        "/.gitconfig",
+        '[includeIf "gitdir:~/"]\n\tpath = ~/extra.conf\n',
+      ).some((f) => f.endsWith("/extra.conf")),
+    ).toBe(true);
+  });
+
+  it("a clean include target still allows a vouched git command", () => {
+    const opts: ReadOnlyOptions = {
+      ...CLEAN,
+      env: {},
+      readGitConfig: (file) =>
+        posix(file).endsWith("/.git/config")
+          ? "[include]\n\tpath = ../clean.conf\n"
+          : "[core]\n\tbare = false\n",
+    };
+    expect(vouched("git status", opts)).toBe(true);
+  });
+
+  it("GIT_CONFIG_GLOBAL replaces the home gitconfig", () => {
+    const seen: string[] = [];
+    const opts: ReadOnlyOptions = {
+      ...CLEAN,
+      env: { GIT_CONFIG_GLOBAL: "/custom/gitconfig" },
+      readGitConfig: (file) => {
+        seen.push(posix(file));
+        return posix(file) === "/custom/gitconfig"
+          ? "[core]\n\tpager = less\n"
+          : "";
+      },
+    };
+    expect(vouched("git status", opts)).toBe(false);
+    expect(seen).toContain("/custom/gitconfig");
+    expect(seen.some((f) => f.endsWith("/.gitconfig"))).toBe(false);
+  });
+
+  it("a config key supplied by the environment is checked too", () => {
+    const opts: ReadOnlyOptions = {
+      ...CLEAN,
+      env: { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.fsmonitor" },
+      readGitConfig: () => "[core]\n\tbare = false\n",
+    };
+    expect(why("git status", opts)).toContain("can run programs");
   });
 
   it("checks the user's config as well as the repository's", () => {
@@ -223,9 +371,19 @@ describe("git", () => {
     "git --exec-path=/x status",
     "git -p log",
     "git log --output=out.txt",
+    "git log -Oout",
     "git diff --output out.txt",
+    "git diff --outp=x",
     "git diff --ext-diff",
     "git grep --open-files-in-pager=less x",
+    'git grep -O"touch /tmp/x" hello',
+    "git grep --open-files-in=less hello",
+    "git grep --open-f=less hello",
+    "git grep -nOtouch hello",
+    "git stash show --output=out.txt",
+    "git stash show --outp=out.txt",
+    "git shortlog --output=out.txt HEAD",
+    "git rev-list --output=out.txt HEAD",
     "git branch -D old",
     "git branch new-branch",
     "git tag v1",

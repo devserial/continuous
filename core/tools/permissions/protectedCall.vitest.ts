@@ -32,6 +32,14 @@ describe("commands that mention a protected path", () => {
     "vim .git/hooks/pre-commit",
     "echo x >> ~/.bashrc",
     "cat .github/workflows/ci.yml",
+    "jq -n '$ENV'",
+    "jq -n env.X",
+    "jq -n 'env'",
+    "jq -n 'env[\"PATH\"]'",
+    "jq -n '$ENV.PATH'",
+    "cat /proc/thread-self/environ",
+    "cat /proc/self/task/1/environ",
+    "cat /proc/42/environ",
   ])("asks for: %s", (c) => {
     expect(cmd(c)).toBeDefined();
   });
@@ -48,6 +56,8 @@ describe("commands that mention a protected path", () => {
     "cat .gitignore",
     "git log --oneline",
     "node scripts/env.js",
+    "jq '.environment'",
+    "jq -n '.foo'",
   ])("does not ask for: %s", (c) => {
     expect(cmd(c)).toBeUndefined();
   });
