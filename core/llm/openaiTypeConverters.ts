@@ -393,22 +393,38 @@ export function usageFromCompletionUsage(raw: unknown): Usage | undefined {
   };
 }
 
-export function fromChatCompletionChunk(
+/**
+ * Every message in one OpenAI-format stream chunk. A chunk can carry
+ * reasoning, text and tool calls together (some llama.cpp, vLLM and proxy
+ * streams do, especially at the reasoning-to-answer boundary). Reasoning is
+ * its own message, first; text and tool calls share one assistant message.
+ */
+export function messagesFromChatCompletionChunk(
   chunk: ChatCompletionChunk,
-): ChatMessage | undefined {
-  const message = chatMessageFromChunk(chunk);
+): ChatMessage[] {
+  const messages = chatMessagesFromChunk(chunk);
   // The last chunk of a stream (stream_options.include_usage) carries the
   // token counts, usually with no choices. Without this they were dropped.
   const usage = usageFromCompletionUsage((chunk as any)?.usage);
-  if (!usage) return message;
-  if (message && message.role === "assistant") return { ...message, usage };
-  if (message) return message; // a thinking chunk; usage comes again at the end
-  return { role: "assistant", content: "", usage };
+  if (!usage) return messages;
+  const assistant = [...messages].reverse().find((m) => m.role === "assistant");
+  if (assistant) {
+    assistant.usage = usage;
+    return messages;
+  }
+  if (messages.length > 0) return messages; // thinking; usage comes again at the end
+  return [{ role: "assistant", content: "", usage }];
 }
 
-function chatMessageFromChunk(
+export function fromChatCompletionChunk(
   chunk: ChatCompletionChunk,
-): ChatMessage | undefined {
+): ChatMessage | ChatMessage[] | undefined {
+  const messages = messagesFromChatCompletionChunk(chunk);
+  if (messages.length === 0) return undefined;
+  return messages.length === 1 ? messages[0] : messages;
+}
+
+function chatMessagesFromChunk(chunk: ChatCompletionChunk): ChatMessage[] {
   const delta = chunk.choices?.[0]?.delta as
     | (ChatCompletionChunk.Choice.Delta & {
         reasoning?: string;
@@ -418,46 +434,53 @@ function chatMessageFromChunk(
         }[];
       })
     | undefined;
+  if (!delta) return [];
 
-  if (delta?.content) {
-    return {
-      role: "assistant",
-      content: delta.content,
-    };
-  } else if (delta?.tool_calls) {
-    const toolCalls = delta?.tool_calls
-      .filter((tool_call) => !tool_call.type || tool_call.type === "function")
-      .map((tool_call) => ({
-        id: tool_call.id,
-        type: "function" as const,
-        function: {
-          name: (tool_call as any).function?.name,
-          arguments: (tool_call as any).function?.arguments,
-        },
-      }));
+  const messages: ChatMessage[] = [];
 
-    if (toolCalls.length > 0) {
-      return {
-        role: "assistant",
-        content: "",
-        toolCalls,
-      };
-    }
-  } else if (
-    delta?.reasoning_content ||
-    delta?.reasoning ||
-    delta?.reasoning_details?.length
+  if (
+    delta.reasoning_content ||
+    delta.reasoning ||
+    delta.reasoning_details?.length
   ) {
-    const message: ThinkingChatMessage = {
+    const thinking: ThinkingChatMessage = {
       role: "thinking",
       content: delta.reasoning_content || delta.reasoning || "",
-      signature: delta?.reasoning_details?.[0]?.signature,
-      reasoning_details: delta?.reasoning_details as any[],
     };
-    return message;
+    if (delta.reasoning_details?.[0]?.signature) {
+      thinking.signature = delta.reasoning_details[0].signature;
+    }
+    if (delta.reasoning_details) {
+      thinking.reasoning_details = delta.reasoning_details as any[];
+    }
+    messages.push(thinking);
   }
 
-  return undefined;
+  const toolCalls = delta.tool_calls
+    ?.filter((tool_call) => !tool_call.type || tool_call.type === "function")
+    .map((tool_call) => ({
+      ...(tool_call.id ? { id: tool_call.id } : {}),
+      // Kept so argument fragments of interleaved parallel calls, which
+      // carry no id after the first chunk, can be merged by index.
+      ...(typeof tool_call.index === "number"
+        ? { index: tool_call.index }
+        : {}),
+      type: "function" as const,
+      function: {
+        name: (tool_call as any).function?.name,
+        arguments: (tool_call as any).function?.arguments,
+      },
+    }));
+
+  if (delta.content || (toolCalls && toolCalls.length > 0)) {
+    messages.push({
+      role: "assistant",
+      content: delta.content || "",
+      ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+    });
+  }
+
+  return messages;
 }
 
 function handleTextDeltaEvent(

@@ -4,14 +4,25 @@ import { fetchModels } from "./fetchModels";
 import {
   contextLengthOf,
   detectLocalServers,
+  isLocalApiBase,
   isMissingEndpointError,
   listOpenAICompatibleModels,
+  localServerEndpoint,
   markOwnRequest,
+  resetPromptProgressSupport,
   resetServerBusy,
   serverBusyElsewhere,
+  serverCapabilities,
   serverConcurrency,
+  streamsPromptProgress,
   withThinkingOff,
 } from "./localServers";
+
+const fetchWithOptions = vi.hoisted(() => vi.fn());
+vi.mock("@continuedev/fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@continuedev/fetch")>();
+  return { ...actual, fetchwithRequestOptions: fetchWithOptions };
+});
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
@@ -541,5 +552,113 @@ describe("serverBusyElsewhere", () => {
       throw new Error("ECONNREFUSED");
     });
     expect(await serverBusyElsewhere(LOCAL, undefined, down)).toBe(false);
+  });
+});
+
+describe("local server probe", () => {
+  it("keeps a path prefix and strips only the /v1 suffix", () => {
+    expect(String(localServerEndpoint("http://box/llama/v1/", "props"))).toBe(
+      "http://box/llama/props",
+    );
+    expect(String(localServerEndpoint("http://box/llama/v1", "props"))).toBe(
+      "http://box/llama/props",
+    );
+    expect(
+      String(localServerEndpoint("http://127.0.0.1:8080/v1/", "slots")),
+    ).toBe("http://127.0.0.1:8080/slots");
+  });
+
+  it("sends the capability probe through request options", async () => {
+    fetchWithOptions.mockImplementation(async () =>
+      json({
+        default_generation_settings: { n_ctx: 4096 },
+        total_slots: 1,
+        chat_template_caps: { supports_tools: true },
+      }),
+    );
+    const plain = vi.fn();
+    const caps = await serverCapabilities(
+      "http://box/llama/v1/",
+      "secret",
+      plain as unknown as typeof fetch,
+      3000,
+      { headers: { "X-Custom": "1" }, verifySsl: false },
+    );
+    expect(plain).not.toHaveBeenCalled();
+    expect(caps).toMatchObject({ tools: true, llamaCppStyle: true });
+    const [url, init, options] = fetchWithOptions.mock.calls[0];
+    expect(String(url)).toBe("http://box/llama/props");
+    expect(init.headers).toEqual({ Authorization: "Bearer secret" });
+    expect(options).toEqual({
+      headers: { "X-Custom": "1" },
+      verifySsl: false,
+    });
+  });
+
+  it("asks again after a probe that never reached the server", async () => {
+    resetPromptProgressSupport();
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+      .mockResolvedValueOnce(
+        json({ default_generation_settings: { n_ctx: 1 }, total_slots: 1 }),
+      );
+    expect(
+      await streamsPromptProgress(
+        "http://127.0.0.1:8080/v1/",
+        undefined,
+        fetchFn as unknown as typeof fetch,
+      ),
+    ).toBe(false);
+    expect(
+      await streamsPromptProgress(
+        "http://127.0.0.1:8080/v1/",
+        undefined,
+        fetchFn as unknown as typeof fetch,
+      ),
+    ).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("remembers a server that answered and has no /props", async () => {
+    resetPromptProgressSupport();
+    const fetchFn = vi.fn(async () => json({ error: "no" }, 404));
+    expect(
+      await streamsPromptProgress(
+        "http://127.0.0.1:8000/v1/",
+        undefined,
+        fetchFn as unknown as typeof fetch,
+      ),
+    ).toBe(false);
+    expect(
+      await streamsPromptProgress(
+        "http://127.0.0.1:8000/v1/",
+        undefined,
+        fetchFn as unknown as typeof fetch,
+      ),
+    ).toBe(false);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isLocalApiBase", () => {
+  it.each([
+    "http://100.64.0.1:8080/v1/",
+    "http://100.127.255.1/v1/",
+    "http://169.254.1.1:8080/v1/",
+    "http://[fd7a:115c:a1e0::1]/v1/",
+    "http://[fe80::1]/v1/",
+  ])("treats %s as local", (apiBase) => {
+    expect(isLocalApiBase(apiBase)).toBe(true);
+  });
+
+  it.each([
+    "http://100.128.0.1/v1/",
+    "http://100.63.1.1/v1/",
+    "http://169.255.1.1/v1/",
+    "http://[2001:db8::1]/v1/",
+    "https://api.openai.com/v1/",
+  ])("treats %s as not local", (apiBase) => {
+    expect(isLocalApiBase(apiBase)).toBe(false);
   });
 });

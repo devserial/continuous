@@ -285,31 +285,49 @@ export function toContinuedTool(tool: vscode.LanguageModelChatTool): Tool {
 
 /**
  * Tool calls stream in as deltas: the first names the call, later ones add
- * argument text. Deltas without an id continue the previous call.
+ * argument text. A delta with an index continues that call. A delta with
+ * neither continues the previous call.
  */
 export class ToolCallCollector {
-  private calls: { id: string; name: string; args: string }[] = [];
+  private calls: { id: string; index?: number; name: string; args: string }[] =
+    [];
+
+  private append(
+    call: { name: string; args: string },
+    delta: ToolCallDelta,
+  ): void {
+    if (delta.function?.name && !call.name) call.name = delta.function.name;
+    if (delta.function?.arguments) call.args += delta.function.arguments;
+  }
+
+  private find(delta: ToolCallDelta) {
+    if (delta.id) {
+      const byId = this.calls.find((c) => c.id === delta.id);
+      if (byId) return byId;
+    }
+    if (typeof delta.index === "number") {
+      return this.calls.find((c) => c.index === delta.index);
+    }
+    // A new id starts a call. With neither id nor index, fragments continue
+    // the previous call.
+    if (delta.id) return undefined;
+    return this.calls[this.calls.length - 1];
+  }
 
   add(delta: ToolCallDelta) {
-    const last = this.calls[this.calls.length - 1];
-    if (delta.id && delta.id !== last?.id) {
-      this.calls.push({
-        id: delta.id,
-        name: delta.function?.name ?? "",
-        args: delta.function?.arguments ?? "",
-      });
+    const match = this.find(delta);
+    if (match) {
+      if (delta.id) match.id = delta.id;
+      if (typeof delta.index === "number") match.index = delta.index;
+      this.append(match, delta);
       return;
     }
-    if (!last) {
-      this.calls.push({
-        id: `call_${this.calls.length}`,
-        name: delta.function?.name ?? "",
-        args: delta.function?.arguments ?? "",
-      });
-      return;
-    }
-    if (delta.function?.name && !last.name) last.name = delta.function.name;
-    if (delta.function?.arguments) last.args += delta.function.arguments;
+    this.calls.push({
+      id: delta.id || `call_${this.calls.length}`,
+      ...(typeof delta.index === "number" ? { index: delta.index } : {}),
+      name: delta.function?.name ?? "",
+      args: delta.function?.arguments ?? "",
+    });
   }
 
   finish(): { id: string; name: string; input: object }[] {

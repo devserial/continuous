@@ -1,3 +1,5 @@
+import type { RequestOptions } from "@continuedev/config-types";
+
 import type { FetchedModel } from "./fetchModels.js";
 
 /** An OpenAI-compatible server that usually runs on this machine. */
@@ -112,45 +114,92 @@ export const STRATA_REASONING_EFFORTS = ["none", "low", "medium", "high"];
  * is good at them. Servers without `/props` (vLLM, LM Studio, Ollama) answer
  * nothing usable, and nothing is assumed.
  */
+/**
+ * llama.cpp serves `/props` and `/slots` beside `/v1`, not under it. A base of
+ * `http://box/llama/v1/` is probed at `http://box/llama/props`, not `http://box/props`.
+ */
+export function localServerEndpoint(apiBase: string, name: string): URL {
+  const root = withSlash(apiBase).replace(/\/v1\/$/i, "/");
+  return new URL(name, root);
+}
+
+function capsFromProps(props: any): ServerCapabilities {
+  const caps = props?.chat_template_caps;
+  const result: ServerCapabilities = {};
+  if (caps && typeof caps === "object") {
+    const tools = caps.supports_tools ?? caps.supports_tool_calls;
+    if (typeof tools === "boolean") result.tools = tools;
+    const levels = caps.reasoning_effort_levels;
+    if (
+      caps.supports_reasoning_effort === true &&
+      Array.isArray(levels) &&
+      levels.every((l: unknown) => typeof l === "string")
+    ) {
+      result.reasoningEfforts = levels;
+    }
+  }
+  if (typeof props?.modalities?.vision === "boolean") {
+    result.images = props.modalities.vision;
+  }
+  const slotContext = Number(props?.default_generation_settings?.n_ctx);
+  if (slotContext > 0) result.contextLength = slotContext;
+  if (props?.default_generation_settings || props?.total_slots) {
+    result.llamaCppStyle = true;
+  }
+  return result;
+}
+
+async function probeCapabilities(
+  apiBase: string,
+  apiKey: string | undefined,
+  fetchFn: FetchFn,
+  timeoutMs: number,
+  requestOptions?: RequestOptions,
+): Promise<{ caps: ServerCapabilities; answered: boolean }> {
+  const url = localServerEndpoint(apiBase, "props");
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  // Not typed as RequestInit: the DOM type and node-fetch's type disagree
+  // on `body`, and this call has to satisfy both.
+  const init = {
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  };
+  try {
+    // requestOptions carries a custom CA, proxy and headers. Global fetch
+    // would send the bearer key without them. Imported only when needed:
+    // this module is also loaded by the webview, and @continuedev/fetch
+    // pulls in node-fetch, which crashes that page before the chat input exists.
+    const response = requestOptions
+      ? await (
+          await import("@continuedev/fetch")
+        ).fetchwithRequestOptions(url, init, requestOptions)
+      : await fetchFn(url, init);
+    if (!response.ok) {
+      // 4xx: the server is up and has no /props. 5xx may be temporary.
+      return { caps: {}, answered: response.status < 500 };
+    }
+    return { caps: capsFromProps(await response.json()), answered: true };
+  } catch {
+    return { caps: {}, answered: false };
+  }
+}
+
 export async function serverCapabilities(
   apiBase: string,
   apiKey?: string,
   fetchFn: FetchFn = fetch,
   timeoutMs = 3000,
+  requestOptions?: RequestOptions,
 ): Promise<ServerCapabilities> {
-  try {
-    const response = await fetchFn(new URL("/props", apiBase), {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!response.ok) return {};
-    const props = await response.json();
-    const caps = props?.chat_template_caps;
-    const result: ServerCapabilities = {};
-    if (caps && typeof caps === "object") {
-      const tools = caps.supports_tools ?? caps.supports_tool_calls;
-      if (typeof tools === "boolean") result.tools = tools;
-      const levels = caps.reasoning_effort_levels;
-      if (
-        caps.supports_reasoning_effort === true &&
-        Array.isArray(levels) &&
-        levels.every((l: unknown) => typeof l === "string")
-      ) {
-        result.reasoningEfforts = levels;
-      }
-    }
-    if (typeof props?.modalities?.vision === "boolean") {
-      result.images = props.modalities.vision;
-    }
-    const slotContext = Number(props?.default_generation_settings?.n_ctx);
-    if (slotContext > 0) result.contextLength = slotContext;
-    if (props?.default_generation_settings || props?.total_slots) {
-      result.llamaCppStyle = true;
-    }
-    return result;
-  } catch {
-    return {};
-  }
+  const { caps } = await probeCapabilities(
+    apiBase,
+    apiKey,
+    fetchFn,
+    timeoutMs,
+    requestOptions,
+  );
+  return caps;
 }
 
 /** Addresses on this machine or the local network. */
@@ -170,8 +219,25 @@ export function isLocalApiBase(apiBase: string): boolean {
     /^127\./.test(host) ||
     /^10\./.test(host) ||
     /^192\.168\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    // Tailscale CGNAT (100.64.0.0/10) and IPv4 link-local
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    isIpv6UlaOrLinkLocal(host)
   );
+}
+
+/** fc00::/7 (ULA, including Tailscale) and fe80::/10 (link-local). */
+function isIpv6UlaOrLinkLocal(host: string): boolean {
+  if (!host.includes(":")) return false;
+  const halves = host.split("::");
+  if (halves.length > 2) return false;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const first = head.length === 0 ? 0 : Number.parseInt(head[0], 16);
+  if (!Number.isFinite(first)) return false;
+  if ((first & 0xfe00) === 0xfc00) return true;
+  if ((first & 0xffc0) === 0xfe80) return true;
+  return false;
 }
 
 const progressSupport = new Map<string, Promise<boolean>>();
@@ -186,16 +252,25 @@ export function streamsPromptProgress(
   apiBase: string | undefined,
   apiKey?: string,
   fetchFn: FetchFn = fetch,
+  requestOptions?: RequestOptions,
 ): Promise<boolean> {
   if (!apiBase || !isLocalApiBase(apiBase)) return Promise.resolve(false);
-  let known = progressSupport.get(apiBase);
-  if (!known) {
-    known = serverCapabilities(apiBase, apiKey, fetchFn).then(
-      (caps) => !!caps.llamaCppStyle,
-    );
-    progressSupport.set(apiBase, known);
-  }
-  return known;
+  const known = progressSupport.get(apiBase);
+  if (known) return known;
+  const pending = probeCapabilities(
+    apiBase,
+    apiKey,
+    fetchFn,
+    3000,
+    requestOptions,
+  ).then(({ caps, answered }) => {
+    // A server that was not up yet should be asked again next time. A server
+    // that answered (including "no /props") is remembered for the session.
+    if (!answered) progressSupport.delete(apiBase);
+    return !!caps.llamaCppStyle;
+  });
+  progressSupport.set(apiBase, pending);
+  return pending;
 }
 
 /** Forget what was learned about servers (tests). */
@@ -538,7 +613,7 @@ export async function serverConcurrency(
   const serving = Number(status?.concurrency?.serving);
   if (status?.service === "strata" && serving > 0) return serving;
   const props = await getJson(
-    new URL("/props", apiBase),
+    localServerEndpoint(apiBase, "props"),
     fetchFn,
     timeoutMs,
     init,
@@ -602,7 +677,7 @@ export async function serverBusyElsewhere(
 
   const busy = (async () => {
     try {
-      const response = await fetchFn(new URL("/slots", apiBase), {
+      const response = await fetchFn(localServerEndpoint(apiBase, "slots"), {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
         signal: AbortSignal.timeout(timeoutMs),
       });

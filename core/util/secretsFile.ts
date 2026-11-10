@@ -37,14 +37,29 @@ export function ensureSecretPlaceholder(dir: string, name: string): string {
  * Throws for values .env cannot hold (line breaks, or all three quote kinds).
  * The value is never included in an error message.
  */
+/** True when dotenv reads `NAME=<formatted>` back as `value`. */
+function envValueRoundTrips(formatted: string, value: string): boolean {
+  return dotenv.parse(`NAME=${formatted}`).NAME === value;
+}
+
 export function formatEnvValue(value: string): string {
   if (/[\r\n]/.test(value)) {
     throw new Error("A secret value cannot contain line breaks");
   }
   if (value === "") return "";
-  if (/^[A-Za-z0-9_.:/+=@%,-]+$/.test(value)) return value;
+  if (
+    /^[A-Za-z0-9_.:/+=@%,-]+$/.test(value) &&
+    envValueRoundTrips(value, value)
+  ) {
+    return value;
+  }
+  // dotenv expands \n and \r inside double quotes, so the first quote style
+  // that merely avoids a character in the value can still change it. Keep the
+  // first style that parses back to the original, or refuse.
   for (const quote of ["'", '"', "`"]) {
-    if (!value.includes(quote)) return `${quote}${value}${quote}`;
+    if (value.includes(quote)) continue;
+    const formatted = `${quote}${value}${quote}`;
+    if (envValueRoundTrips(formatted, value)) return formatted;
   }
   throw new Error("This secret value cannot be stored in a .env file");
 }

@@ -16,7 +16,16 @@ export class GUISelectors {
     index: number,
   ) {
     const elements = await this.getMessageInputFields(view);
-    return elements[index];
+    const element = elements[index];
+    // A missing input is `undefined`, which does not throw. Callers that poll
+    // with waitForSuccess would then treat "not rendered yet" as success and
+    // crash on sendKeys. Throwing makes those waits keep polling.
+    if (!element) {
+      throw new Error(
+        `Message input ${index} was not found (${elements.length} present)`,
+      );
+    }
+    return element;
   }
 
   public static getAllIframes(driver: WebDriver) {

@@ -161,16 +161,23 @@ async function fetchOpenRouterModels(): Promise<FetchedModel[]> {
   }
 }
 
-async function fetchAnthropicModels(apiKey?: string): Promise<FetchedModel[]> {
-  const response = await fetch(
-    "https://api.anthropic.com/v1/models?limit=100",
-    {
-      headers: {
-        "x-api-key": apiKey ?? "",
-        "anthropic-version": "2023-06-01",
-      },
+function withTrailingSlash(url: string): string {
+  return url.endsWith("/") ? url : `${url}/`;
+}
+
+async function fetchAnthropicModels(
+  apiKey?: string,
+  apiBase?: string,
+): Promise<FetchedModel[]> {
+  const root = withTrailingSlash(apiBase || "https://api.anthropic.com/v1/");
+  const url = new URL("models", root);
+  url.searchParams.set("limit", "100");
+  const response = await fetch(url, {
+    headers: {
+      "x-api-key": apiKey ?? "",
+      "anthropic-version": "2023-06-01",
     },
-  );
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch Anthropic models: ${response.status}`);
   }
@@ -196,7 +203,9 @@ async function fetchGeminiModels(
   apiKey?: string,
   apiBase?: string,
 ): Promise<FetchedModel[]> {
-  const base = apiBase || "https://generativelanguage.googleapis.com/v1beta/";
+  const base = withTrailingSlash(
+    apiBase || "https://generativelanguage.googleapis.com/v1beta/",
+  );
   const url = new URL("models", base);
   url.searchParams.set("key", apiKey ?? "");
   const response = await fetch(url);
@@ -322,7 +331,7 @@ export async function fetchModels(
     case "openrouter":
       return fetchOpenRouterModels();
     case "anthropic":
-      return fetchAnthropicModels(apiKey);
+      return fetchAnthropicModels(apiKey, apiBase);
     case "gemini":
       return fetchGeminiModels(apiKey, apiBase);
     default:

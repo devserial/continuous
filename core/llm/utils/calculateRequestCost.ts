@@ -236,13 +236,16 @@ function findListPricing(
 function calculateCachedModelCost(
   model: string,
   usage: Usage,
+  wholePromptTokens?: number,
 ): CostBreakdown | null {
   // The whole prompt decides the price tier. `promptTokens` leaves out the
-  // cache reads and writes, so add them back.
+  // cache reads and writes, so add them back, unless the caller already
+  // counted the whole prompt (OpenRouter's prompt_tokens includes the cache).
   const wholePrompt =
+    wholePromptTokens ??
     usage.promptTokens +
-    (usage.promptTokensDetails?.cachedTokens ?? 0) +
-    (usage.promptTokensDetails?.cacheWriteTokens ?? 0);
+      (usage.promptTokensDetails?.cachedTokens ?? 0) +
+      (usage.promptTokensDetails?.cacheWriteTokens ?? 0);
   const modelPricing = findModelPricing(model, wholePrompt);
   if (!modelPricing) {
     return null; // Unknown model
@@ -611,6 +614,22 @@ function calculateOpenAICost(
   return { cost: totalCost, breakdown };
 }
 
+/**
+ * OpenRouter reports usage the OpenAI way: `prompt_tokens` already includes
+ * cache reads and writes, and the split is only in `prompt_tokens_details`.
+ * `priceCachedUsage` bills `promptTokens` as uncached input, so those have to
+ * come out first or a cached prompt is charged twice.
+ */
+function usageWithCacheTakenOut(usage: Usage): Usage {
+  const cached = usage.promptTokensDetails?.cachedTokens ?? 0;
+  const written = usage.promptTokensDetails?.cacheWriteTokens ?? 0;
+  if (cached === 0 && written === 0) return usage;
+  return {
+    ...usage,
+    promptTokens: Math.max(0, usage.promptTokens - cached - written),
+  };
+}
+
 export function calculateRequestCost(
   provider: string,
   model: string,
@@ -624,8 +643,14 @@ export function calculateRequestCost(
     // Claude models served by other providers use the same list prices as an
     // estimate. Regional pricing, data residency and reseller margins can differ.
     case "vertexai":
-    case "openrouter":
       return calculateCachedModelCost(model, usage);
+    case "openrouter":
+      return calculateCachedModelCost(
+        model,
+        usageWithCacheTakenOut(usage),
+        // prompt_tokens is already the whole prompt, cache included.
+        usage.promptTokens,
+      );
     case "openai":
       return calculateOpenAICost(model, usage);
     default:

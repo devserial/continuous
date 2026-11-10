@@ -960,6 +960,11 @@ export interface ToolCall {
 export interface ToolCallDelta {
   id?: string;
   type?: "function";
+  /**
+   * OpenAI stream `tool_calls[].index`. Argument fragments of parallel calls
+   * omit `id` after the first chunk and are matched on this instead.
+   */
+  index?: number;
   function?: {
     name?: string;
     arguments?: string;
@@ -1176,6 +1181,11 @@ interface ToolCallState {
   toolCallId: string;
   toolCall: ToolCall;
   status: ToolStatus;
+  /**
+   * OpenAI stream index of this call, while arguments are still arriving.
+   * Not sent back to the API.
+   */
+  index?: number;
   parsedArgs: any;
   processedArgs?: Record<string, any>; // Added in preprocesing step
   /** Why this call is waiting for approval, when a rule or protected path says so. */

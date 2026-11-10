@@ -149,16 +149,22 @@ function applyToolCallDelta(
     existingStateIndex = toolCallStates.findIndex(
       (state) => state.toolCallId === toolCallDelta.id,
     );
-  } else {
-    // No ID in delta (common in OpenAI streaming fragments)
-    // Strategy: Update the most recently added tool call that's still being generated
-    // This handles the pattern: initial tool call with ID, then fragments without ID
+  }
+  if (existingStateIndex < 0 && typeof toolCallDelta.index === "number") {
+    // Parallel calls interleave argument fragments that carry index but no id
+    // after the first chunk. Matching the most recent call would mix them.
+    existingStateIndex = toolCallStates.findIndex(
+      (state) => state.index === toolCallDelta.index,
+    );
+  }
+  if (
+    existingStateIndex < 0 &&
+    !toolCallDelta.id &&
+    typeof toolCallDelta.index !== "number" &&
+    toolCallStates.length > 0
+  ) {
+    // No ID and no index (a single call streamed as fragments).
     existingStateIndex = toolCallStates.length - 1;
-
-    // Ensure we have at least one tool call to update
-    if (existingStateIndex < 0) {
-      existingStateIndex = -1; // Will create new tool call
-    }
   }
 
   const existingState =
@@ -822,7 +828,8 @@ export const sessionSlice = createSlice({
             lastMessage = lastItem.message;
           }
 
-          // Add to the existing message
+          // Add to the existing message. Text and tool calls can share a chunk,
+          // so a tool-call update is not an alternative to appending text.
           if (messageContent) {
             if (messageContent.includes("<think>") && message.role !== "tool") {
               lastItem.reasoning = {
@@ -861,7 +868,8 @@ export const sessionSlice = createSlice({
             if (lastMessage.role === "thinking") {
               lastMessage.signature = message.signature;
             }
-          } else if (
+          }
+          if (
             message.role === "assistant" &&
             message.toolCalls?.length &&
             lastMessage.role === "assistant"

@@ -20,7 +20,7 @@ import { renderChatMessage } from "../../util/messageContent.js";
 import { BaseLLM } from "../index.js";
 import { isMissingEndpointError, withThinkingOff } from "../localServers.js";
 import {
-  fromChatCompletionChunk,
+  messagesFromChatCompletionChunk,
   fromResponsesChunk,
   LlmApiRequestType,
   toChatBody,
@@ -583,8 +583,7 @@ class OpenAI extends BaseLLM {
     }
 
     for await (const value of streamSse(response)) {
-      const chunk = fromChatCompletionChunk(value);
-      if (chunk) {
+      for (const chunk of messagesFromChatCompletionChunk(value)) {
         yield chunk;
       }
     }

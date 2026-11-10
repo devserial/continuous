@@ -69,7 +69,7 @@ import {
   pruneRawPromptFromTop,
 } from "./countTokens.js";
 import {
-  fromChatCompletionChunk,
+  messagesFromChatCompletionChunk,
   fromChatResponse,
   LlmApiRequestType,
   toChatBody,
@@ -728,8 +728,7 @@ export abstract class BaseLLM implements ILLM {
           if (!this.lastRequestId && typeof (chunk as any).id === "string") {
             this.lastRequestId = (chunk as any).id;
           }
-          const result = fromChatCompletionChunk(chunk);
-          if (result) {
+          for (const result of messagesFromChatCompletionChunk(chunk)) {
             const content = renderChatMessage(result);
             const formattedContent = this._formatChatMessage(result);
             interaction?.logItem({
@@ -1160,17 +1159,20 @@ export abstract class BaseLLM implements ILLM {
         yield { role: "assistant", content: "", promptProgress };
         continue;
       }
-      const chatChunk = fromChatCompletionChunk(chunk as any);
-      // llama.cpp and Strata time the prompt reading: the GUI uses it to say
-      // how long a re-read would take
       const readSpeed = Number((chunk as any).timings?.prompt_per_second);
-      if (chatChunk?.role === "assistant" && chatChunk.usage && readSpeed > 0) {
-        chatChunk.usage = {
-          ...chatChunk.usage,
-          promptTokensPerSecond: readSpeed,
-        };
-      }
-      if (chatChunk) {
+      for (const chatChunk of messagesFromChatCompletionChunk(chunk as any)) {
+        // llama.cpp and Strata time the prompt reading: the GUI uses it to say
+        // how long a re-read would take
+        if (
+          chatChunk.role === "assistant" &&
+          chatChunk.usage &&
+          readSpeed > 0
+        ) {
+          chatChunk.usage = {
+            ...chatChunk.usage,
+            promptTokensPerSecond: readSpeed,
+          };
+        }
         yield chatChunk;
       }
       if ((chunk as any).citations && Array.isArray((chunk as any).citations)) {
@@ -1412,7 +1414,12 @@ export abstract class BaseLLM implements ILLM {
           // llama.cpp and Strata report how far they are in a long prompt
           if (
             completionOptions.stream !== false &&
-            (await streamsPromptProgress(this.apiBase, this.apiKey))
+            (await streamsPromptProgress(
+              this.apiBase,
+              this.apiKey,
+              fetch,
+              this.requestOptions,
+            ))
           ) {
             // Not an OpenAI field, so not in the SDK's type
             body = { ...body, return_progress: true } as unknown as typeof body;

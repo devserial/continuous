@@ -382,6 +382,72 @@ describe("calculateRequestCost cache lifetimes and providers", () => {
       }),
     ).toBeNull();
   });
+
+  it("does not charge OpenRouter cached tokens again as input", () => {
+    // OpenRouter's prompt_tokens includes the cache (OpenAI style). Sonnet 4.6
+    // is $3 / $15 / $0.30 read. 100k prompt, 95k of it cached, 1k output.
+    const result = calculateRequestCost(
+      "openrouter",
+      "anthropic/claude-sonnet-4.6",
+      {
+        promptTokens: 100_000,
+        completionTokens: 1_000,
+        promptTokensDetails: { cachedTokens: 95_000 },
+      },
+    );
+    expect(result).not.toBeNull();
+    // 5k × $3 + 95k × $0.30 + 1k × $15. Charging the full 100k as input is $0.3435.
+    expect(result!.cost).toBeCloseTo(0.0585, 6);
+  });
+
+  it("prices OpenRouter cache writes out of the prompt, not on top of it", () => {
+    const result = calculateRequestCost(
+      "openrouter",
+      "anthropic/claude-sonnet-4.6",
+      {
+        promptTokens: 10_000,
+        completionTokens: 0,
+        promptTokensDetails: { cacheWriteTokens: 8_000 },
+      },
+    );
+    // 2k uncached at $3 and 8k written at $3.75
+    expect(result!.cost).toBeCloseTo(0.036, 6);
+  });
+
+  it("uses the whole OpenRouter prompt, not prompt plus cache, for the price tier", () => {
+    // 60k includes 50k cached, so the prompt is under Haiku 5.5's 100k tier.
+    const low = calculateRequestCost(
+      "openrouter",
+      "anthropic/claude-haiku-5.5",
+      {
+        promptTokens: 60_000,
+        completionTokens: 0,
+        promptTokensDetails: { cachedTokens: 50_000 },
+      },
+    );
+    expect(low!.cost).toBeCloseTo(0.0015, 6);
+
+    // The prompt itself is over the tier, even though most of it is cached.
+    const high = calculateRequestCost(
+      "openrouter",
+      "anthropic/claude-haiku-5.5",
+      {
+        promptTokens: 120_000,
+        completionTokens: 0,
+        promptTokensDetails: { cachedTokens: 100_000 },
+      },
+    );
+    expect(high!.cost).toBeCloseTo(0.015, 6);
+  });
+
+  it("still treats Vertex Claude prompt tokens as excluding the cache", () => {
+    const result = calculateRequestCost("vertexai", "claude-sonnet-4-6", {
+      promptTokens: 5_000,
+      completionTokens: 1_000,
+      promptTokensDetails: { cachedTokens: 95_000 },
+    });
+    expect(result!.cost).toBeCloseTo(0.0585, 6);
+  });
 });
 
 describe("normalizeClaudeModelId", () => {

@@ -125,6 +125,22 @@ describe("ToolCallCollector", () => {
     ]);
   });
 
+  it("merges interleaved parallel calls by index", () => {
+    const c = new ToolCallCollector();
+    c.add({
+      id: "a",
+      index: 0,
+      function: { name: "read_file", arguments: "" },
+    });
+    c.add({ id: "b", index: 1, function: { name: "ls", arguments: "" } });
+    c.add({ index: 0, function: { arguments: '{"path":"a.ts"}' } });
+    c.add({ index: 1, function: { arguments: '{"path":"."}' } });
+    expect(c.finish()).toEqual([
+      { id: "a", name: "read_file", input: { path: "a.ts" } },
+      { id: "b", name: "ls", input: { path: "." } },
+    ]);
+  });
+
   it("gives up on unparseable arguments with an empty object", () => {
     const c = new ToolCallCollector();
     c.add({ id: "a", function: { name: "x", arguments: "{oops" } });

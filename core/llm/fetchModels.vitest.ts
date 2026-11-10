@@ -36,8 +36,26 @@ describe("fetchModels: separate input/output limits", () => {
     });
     const [m] = await fetchModels("anthropic", "key");
     expect(m.maxTokens).toBe(128_000);
+    const [url, init] = (fetch as any).mock.calls[0];
+    expect(String(url)).toBe("https://api.anthropic.com/v1/models?limit=100");
+    expect(init.headers["x-api-key"]).toBe("key");
     // The prompt is pruned to contextLength - maxTokens.
     expect(m.contextLength! - m.maxTokens!).toBe(100_000);
+  });
+
+  it("Anthropic: lists models at a custom apiBase", async () => {
+    respond({ data: [{ id: "claude-sonnet-4-6", display_name: "Sonnet" }] });
+    await fetchModels(
+      "anthropic",
+      "gateway-key",
+      "https://llm.example/anthropic/v1",
+    );
+    const [url, init] = (fetch as any).mock.calls[0];
+    expect(String(url)).toBe(
+      "https://llm.example/anthropic/v1/models?limit=100",
+    );
+    expect(init.headers["x-api-key"]).toBe("gateway-key");
+    expect(String(url)).not.toContain("api.anthropic.com");
   });
 
   it("Gemini: input budget equals inputTokenLimit", async () => {
@@ -54,5 +72,12 @@ describe("fetchModels: separate input/output limits", () => {
     });
     const [m] = await fetchModels("gemini", "key");
     expect(m.contextLength! - m.maxTokens!).toBe(1_048_576);
+  });
+
+  it("Gemini: keeps the base path when it has no trailing slash", async () => {
+    respond({ models: [] });
+    await fetchModels("gemini", "key", "https://llm.example/v1beta");
+    const [url] = (fetch as any).mock.calls[0];
+    expect(String(url)).toContain("https://llm.example/v1beta/models");
   });
 });

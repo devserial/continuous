@@ -156,6 +156,7 @@ describe("sessionSlice streamUpdate", () => {
 
     // Mock addToolCallDeltaToState
     mockAddToolCallDeltaToState.mockImplementation((delta, state) => {
+      const index = delta.index ?? state?.index;
       return {
         status: "generating" as const,
         toolCall: {
@@ -168,6 +169,7 @@ describe("sessionSlice streamUpdate", () => {
         },
         toolCallId: delta.id || "mock-tool-id",
         parsedArgs: {},
+        ...(index !== undefined ? { index } : {}),
       };
     });
   });
@@ -576,6 +578,83 @@ describe("sessionSlice streamUpdate", () => {
       expect(newState.history).toHaveLength(2);
       expect(newState.history[1].message.role).toBe("assistant");
       expect(newState.history[1].toolCallStates).toHaveLength(1);
+    });
+
+    it("keeps text that arrives in the same chunk as a tool call", () => {
+      const initialState = createInitialState();
+      const newState = sessionSlice.reducer(initialState, {
+        type: "session/streamUpdate",
+        payload: [
+          {
+            role: "assistant" as const,
+            content: "I'll look that up.",
+            toolCalls: [
+              {
+                id: "call_1",
+                type: "function" as const,
+                function: { name: "search", arguments: "{}" },
+              },
+            ],
+          },
+        ],
+      });
+      expect(newState.history[1].message.content).toBe("I'll look that up.");
+      expect(newState.history[1].toolCallStates?.[0]?.toolCallId).toBe(
+        "call_1",
+      );
+    });
+
+    it("merges parallel tool-call fragments by index when the id is missing", () => {
+      const initialState = createInitialState();
+      const start = sessionSlice.reducer(initialState, {
+        type: "session/streamUpdate",
+        payload: [
+          {
+            role: "assistant" as const,
+            content: "",
+            toolCalls: [
+              {
+                id: "call_a",
+                index: 0,
+                type: "function" as const,
+                function: { name: "read", arguments: "" },
+              },
+            ],
+          },
+          {
+            role: "assistant" as const,
+            content: "",
+            toolCalls: [
+              {
+                id: "call_b",
+                index: 1,
+                type: "function" as const,
+                function: { name: "ls", arguments: "" },
+              },
+            ],
+          },
+        ],
+      });
+      const next = sessionSlice.reducer(start, {
+        type: "session/streamUpdate",
+        payload: [
+          {
+            role: "assistant" as const,
+            content: "",
+            toolCalls: [
+              {
+                index: 0,
+                type: "function" as const,
+                function: { arguments: '{"path":"a"}' },
+              },
+            ],
+          },
+        ],
+      });
+      const calls = next.history[1].toolCallStates!;
+      expect(calls).toHaveLength(2);
+      expect(calls[0].toolCall.function.arguments).toBe('{"path":"a"}');
+      expect(calls[1].toolCallId).toBe("call_b");
     });
   });
 });

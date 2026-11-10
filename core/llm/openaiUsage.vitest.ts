@@ -44,6 +44,72 @@ describe("usage from OpenAI-format responses", () => {
     });
   });
 
+  it("keeps tool calls and reasoning that share a chunk with text", () => {
+    const msg = fromChatCompletionChunk({
+      choices: [
+        {
+          index: 0,
+          delta: {
+            content: "done",
+            reasoning_content: "last thought",
+            tool_calls: [
+              {
+                index: 1,
+                id: "call_1",
+                type: "function",
+                function: { name: "lookup", arguments: "{" },
+              },
+            ],
+          },
+        },
+      ],
+    } as any);
+    expect(msg).toEqual([
+      { role: "thinking", content: "last thought" },
+      {
+        role: "assistant",
+        content: "done",
+        toolCalls: [
+          {
+            id: "call_1",
+            index: 1,
+            type: "function",
+            function: { name: "lookup", arguments: "{" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps the index on a tool-call fragment that has no id", () => {
+    const msg = fromChatCompletionChunk({
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                function: { arguments: '"path"' },
+              },
+            ],
+          },
+        },
+      ],
+    } as any);
+    expect(msg).toEqual({
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        {
+          index: 0,
+          type: "function",
+          function: { name: undefined, arguments: '"path"' },
+        },
+      ],
+    });
+  });
+
   it("leaves chunks without usage as they were", () => {
     expect(
       fromChatCompletionChunk({

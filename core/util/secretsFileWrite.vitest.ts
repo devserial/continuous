@@ -93,6 +93,22 @@ describe("setSecretInEnvFile", () => {
   it("refuses a value holding every quote kind", () => {
     expect(() => formatEnvValue(`'"\``)).toThrow(/cannot be stored/);
   });
+
+  it("does not let a quote and a backslash-n become a newline", () => {
+    const value = "it's a \\n key";
+    setSecretInEnvFile(dir, "K", value);
+    expect(readSecretFromEnvFile(dir, "K")).toBe(value);
+    expect(read()).not.toMatch(/^K="/m);
+  });
+
+  it("refuses a value dotenv cannot quote without changing it", () => {
+    const value = `quote ' " \` and \\n`;
+    expect(() => formatEnvValue(value)).toThrow(/cannot be stored/);
+    expect(() => setSecretInEnvFile(dir, "K", value)).toThrow(
+      /cannot be stored/,
+    );
+    expect(fs.existsSync(path.join(dir, ".env"))).toBe(false);
+  });
 });
 
 describe("envFileHasValue", () => {

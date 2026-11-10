@@ -509,4 +509,23 @@ describe("addToolCallDeltaToState", () => {
     );
     expect(result.parsedArgs).toEqual({ query: "test", limit: 10 });
   });
+
+  it("keeps the stream index across argument fragments", () => {
+    const started = addToolCallDeltaToState(
+      {
+        id: "call_a",
+        index: 0,
+        type: "function",
+        function: { name: "read", arguments: "" },
+      },
+      undefined,
+    );
+    const next = addToolCallDeltaToState(
+      { index: 0, function: { arguments: '{"path":' } },
+      started,
+    );
+    expect(next.index).toBe(0);
+    expect(next.toolCallId).toBe("call_a");
+    expect(next.toolCall.function.arguments).toBe('{"path":');
+  });
 });

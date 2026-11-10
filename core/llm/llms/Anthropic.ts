@@ -297,6 +297,92 @@ class Anthropic extends BaseLLM {
     }
   }
 
+  /**
+   * Anthropic's `usage` as core's Usage. `input_tokens` leaves out the cache;
+   * reads and writes, including the 5-minute / 1-hour split, are separate.
+   */
+  private anthropicUsage(raw: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_creation?: {
+      ephemeral_5m_input_tokens?: number;
+      ephemeral_1h_input_tokens?: number;
+    } | null;
+  }): Usage {
+    const usage: Usage = {
+      promptTokens: raw.input_tokens ?? 0,
+      completionTokens: raw.output_tokens ?? 0,
+      promptTokensDetails: {
+        cachedTokens: raw.cache_read_input_tokens ?? undefined,
+        cacheWriteTokens: raw.cache_creation_input_tokens ?? undefined,
+      },
+    };
+    if (raw.cache_creation) {
+      usage.promptTokensDetails!.cacheWriteTokens5m =
+        raw.cache_creation.ephemeral_5m_input_tokens;
+      usage.promptTokensDetails!.cacheWriteTokens1h =
+        raw.cache_creation.ephemeral_1h_input_tokens;
+    }
+    return usage;
+  }
+
+  /**
+   * A non-streamed message. `content` is a list of blocks: with thinking on,
+   * the first is a thinking block, and a tool call is a `tool_use` block, so
+   * reading `content[0].text` drops the reply.
+   */
+  private *nonStreamMessages(
+    json: any,
+    response: { headers?: { get?: (name: string) => string | null } },
+  ): Generator<ChatMessage> {
+    const blocks: any[] = Array.isArray(json?.content) ? json.content : [];
+    for (const block of blocks) {
+      if (block?.type === "redacted_thinking") {
+        yield {
+          role: "thinking",
+          content: "",
+          redactedThinking: block.data,
+        };
+      } else if (block?.type === "thinking") {
+        yield {
+          role: "thinking",
+          content: block.thinking ?? "",
+          ...(block.signature ? { signature: block.signature } : {}),
+        };
+      }
+    }
+    const text = blocks
+      .filter((block) => block?.type === "text" && block.text)
+      .map((block) => block.text)
+      .join("");
+    const toolCalls: ToolCallDelta[] = blocks
+      .filter((block) => block?.type === "tool_use" && block.id && block.name)
+      .map((block) => ({
+        id: block.id,
+        type: "function" as const,
+        function: {
+          name: block.name,
+          arguments: JSON.stringify(block.input ?? {}),
+        },
+      }));
+    const usage = json?.usage ? this.anthropicUsage(json.usage) : undefined;
+    yield {
+      role: "assistant",
+      content: text,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(usage
+        ? {
+            usage: withResponseInfo(usage, {
+              stopReason: json.stop_reason,
+              requestId: response.headers?.get?.("request-id") ?? json.id,
+            }),
+          }
+        : {}),
+    };
+  }
+
   async *handleResponse(
     response: any,
     stream: boolean | undefined,
@@ -307,7 +393,17 @@ class Anthropic extends BaseLLM {
     }
 
     if (!response.ok) {
-      const json = await response.json();
+      const text = await response.text();
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // A proxy or load balancer often answers with an HTML page. Parsing
+        // that as JSON hid the status behind "Unexpected token <".
+        throw new Error(
+          `Anthropic API sent back ${response.status}: ${text.slice(0, 500)}`,
+        );
+      }
       if (json.type === "error") {
         throw new Error(getAnthropicErrorMessage(json));
       }
@@ -317,19 +413,7 @@ class Anthropic extends BaseLLM {
     }
 
     if (stream === false) {
-      const json = await response.json();
-      const cost = json.usage
-        ? {
-            inputTokens: json.usage.input_tokens,
-            outputTokens: json.usage.output_tokens,
-            totalTokens: json.usage.input_tokens + json.usage.output_tokens,
-          }
-        : {};
-      yield {
-        role: "assistant",
-        content: json.content[0].text,
-        ...(Object.keys(cost).length > 0 ? { cost } : {}),
-      };
+      yield* this.nonStreamMessages(await response.json(), response);
       return;
     }
 
@@ -354,21 +438,10 @@ class Anthropic extends BaseLLM {
       const rawEvent = event as RawMessageStreamEvent;
       switch (event.type) {
         case "message_start":
-          // Capture initial usage information
+          // Capture initial usage information. Output tokens arrive later.
           const startEvent = rawEvent as RawMessageStartEvent;
           messageId = startEvent.message.id;
-          usage.promptTokens = startEvent.message.usage.input_tokens;
-          usage.promptTokensDetails!.cachedTokens =
-            startEvent.message.usage.cache_read_input_tokens ?? undefined;
-          usage.promptTokensDetails!.cacheWriteTokens =
-            startEvent.message.usage.cache_creation_input_tokens ?? undefined;
-          // The per-lifetime split is absent on older API versions and proxies.
-          if (startEvent.message.usage.cache_creation) {
-            usage.promptTokensDetails!.cacheWriteTokens5m =
-              startEvent.message.usage.cache_creation.ephemeral_5m_input_tokens;
-            usage.promptTokensDetails!.cacheWriteTokens1h =
-              startEvent.message.usage.cache_creation.ephemeral_1h_input_tokens;
-          }
+          usage = this.anthropicUsage(startEvent.message.usage);
           break;
         case "message_delta":
           // Update usage information during streaming

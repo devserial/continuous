@@ -10,7 +10,7 @@ import {
   ToolResultChatMessage,
 } from "../../index.js";
 import { BaseLLM } from "../index.js";
-import { fromChatCompletionChunk } from "../openaiTypeConverters.js";
+import { messagesFromChatCompletionChunk } from "../openaiTypeConverters.js";
 
 let watsonxToken = {
   expiration: 0,
@@ -313,13 +313,17 @@ class WatsonX extends BaseLLM {
     let accumulatedArgs = "";
 
     for await (const value of streamSse(response)) {
-      const message = fromChatCompletionChunk(value);
-      if (!!message) {
-        if (
-          (message as AssistantChatMessage)?.toolCalls &&
-          (message as AssistantChatMessage).toolCalls?.length !== 0
-        ) {
-          let chunk = message as AssistantChatMessage;
+      for (const message of messagesFromChatCompletionChunk(value)) {
+        if (message.role !== "assistant") {
+          yield message;
+          continue;
+        }
+        if (message.toolCalls?.length) {
+          // Text that arrived in the same chunk as the tool call.
+          if (message.content) {
+            yield { role: "assistant", content: message.content };
+          }
+          let chunk: AssistantChatMessage = { ...message, content: "" };
           if (!!chunk.toolCalls?.[0]?.id) {
             toolCallId = chunk.toolCalls?.[0]?.id;
           }

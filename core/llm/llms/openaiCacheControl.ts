@@ -19,17 +19,29 @@ export interface OpenAICacheOptions {
   ttl?: PromptCacheTtl;
 }
 
-/** Put cache_control on the last text part of a message's content. */
+/**
+ * Put cache_control on the last part that can carry it. A message that ends
+ * with an image still gets a breakpoint, on that image, the same as the
+ * native Anthropic path. An earlier text part is marked when nothing after
+ * it can carry one.
+ */
 export function addCacheControlToContent(content: any, ttl?: PromptCacheTtl) {
   const cache_control = cacheControlFor(ttl);
   if (typeof content === "string") {
     return [{ type: "text", text: content, cache_control }];
   }
   if (Array.isArray(content)) {
-    return content.map((part, idx) =>
-      part.type === "text" && idx === content.length - 1
-        ? { ...part, cache_control }
-        : part,
+    let last = -1;
+    for (let i = content.length - 1; i >= 0; i--) {
+      const type = content[i]?.type;
+      if (type === "text" || type === "image_url") {
+        last = i;
+        break;
+      }
+    }
+    if (last < 0) return content;
+    return content.map((part: any, idx: number) =>
+      idx === last ? { ...part, cache_control } : part,
     );
   }
   return content;

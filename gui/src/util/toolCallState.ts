@@ -54,6 +54,8 @@ export function addToolCallDeltaToState(
 
   const [_, parsedArgs] = incrementalParseJson(mergedArgs || "{}");
 
+  const index = toolCallDelta.index ?? currentState?.index;
+
   return {
     status: "generating",
     toolCall: {
@@ -66,6 +68,7 @@ export function addToolCallDeltaToState(
     },
     toolCallId: callId,
     parsedArgs,
+    ...(index !== undefined ? { index } : {}),
   };
 }
 
