@@ -26,6 +26,7 @@ import {
   getSessionLoop,
   getSessionTaskPlan,
   loadOrCreateSessionById,
+  trackSessionUsage,
   updateSessionLoop,
 } from "../session.js";
 import { savePlan } from "../tools/presentPlan.js";
@@ -148,6 +149,34 @@ describe("Loop mode's driver in the CLI", () => {
   async function planOf(...todos: string[]) {
     await savePlan({ title: "Work", plan: "The work.", todos }, cwd);
   }
+
+  it("a run that ends over its item's own budget with no report ends as over budget, not nudged and not a failure of the loop's", async () => {
+    await savePlan(
+      {
+        title: "Work",
+        plan: "The work.",
+        todos: ["One", "Two"],
+        todo_details: [{ todo: 1, budget: "10K tokens" }],
+      },
+      cwd,
+    );
+    startLoopFromPlan("normal");
+    expect(getSessionTaskPlan()?.items[0].budget).toEqual({ tokens: 10_000 });
+    const turn = nextTurn(history().length);
+    expect(turn?.kind).toBe("item");
+    append(user(turn!.prompt));
+    // The run used more than the item's budget and ended without finish_item
+    trackSessionUsage(0, {
+      promptTokens: 30_000,
+      completionTokens: 500,
+    });
+    nextTurn(history().length);
+    const item = loopNow().items.find((i) => i.id === "1")!;
+    expect(item.status).toBe("failed");
+    expect(item.overBudget).toMatchObject({ which: "tokens", limit: 10_000 });
+    expect(item.summary).toContain("Over budget");
+    expect(loopNow().consecutiveFailures ?? 0).toBe(0);
+  });
 
   it("re-plans in Plan mode, and a re-plan that adds nothing starts the next round by itself (Auto)", async () => {
     await planOf("One", "Two");
@@ -607,6 +636,46 @@ describe("Loop mode's driver in the CLI", () => {
       const again = nextTurn(history().length);
       expect(again?.prompt).toContain("failed (exit 3). Fix what it reports:");
       expect(again?.prompt).toContain("1 test failed");
+    });
+
+    it("a check a rule excludes fails the item and does not count it done", async () => {
+      await planWith([{ text: "One", check: PASS }, { text: "Two" }]);
+      startLoopFromPlan("normal");
+      services.toolPermissions.initializeSync({
+        mode: "normal",
+        exclude: ["Bash"],
+      });
+      runItem("done");
+      await runCheck("1");
+      expect(loopNow().items[0]).toMatchObject({
+        status: "failed",
+        check: { status: "refused" },
+      });
+      expect(loopNow().items[0].summary).toContain("check not run");
+      expect(loopNow().items[1].status).toBe("pending");
+      expect(loopNow().doneThisRound).toBe(0);
+      expect(loopNow().stopReason).not.toBe("done");
+      // The item failed its check, so the loop does not go on as if it were done
+      const next = nextLoopTurn(history().length);
+      const prompt = next && "prompt" in next ? next.prompt : "";
+      expect(prompt).toContain("check not run");
+      expect(prompt).not.toContain("All 2 items are done");
+    });
+
+    it("not allowing a held check leaves the item failed, not done", async () => {
+      await planWith([{ text: "One", check: PASS }]);
+      startLoopFromPlan("normal");
+      runItem("done");
+      await runCheck("1");
+      const q = loopNow().questions.find((x) => x.kind === "approval")!;
+      answerLoopQuestion({ questionId: q.id, text: "", approve: false });
+      expect(loopNow().items[0]).toMatchObject({
+        status: "failed",
+        check: { status: "refused" },
+      });
+      expect(loopNow().items[0].summary).toContain("check not run");
+      expect(loopNow().doneThisRound).toBe(0);
+      expect(loopNow().stopReason).not.toBe("done");
     });
 
     it("a check that would ask is held in the inbox; Allow once runs it", async () => {

@@ -160,16 +160,16 @@ describe("the tail in the CLI request", () => {
   });
 
   it("on a Loop item comes after the plan block, and the system message is the same as the mode's", async () => {
-    const T0 = new Date("2026-11-08T12:00:00Z");
+    const now = new Date();
     const plan = {
       items: [{ id: "1", text: "Fix", status: "in_progress" as const }],
-      updatedAt: T0.toISOString(),
+      updatedAt: now.toISOString(),
     };
     session.loop = startItemRun(
-      createLoop(plan, { now: T0, sessionTokens: 0 }),
+      createLoop(plan, { now, sessionTokens: 0 }),
       "1",
       2,
-      T0,
+      now,
     );
     // The plan block is placed by the stream for the main history, which the
     // history service holds

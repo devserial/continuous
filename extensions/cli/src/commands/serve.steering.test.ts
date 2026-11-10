@@ -365,6 +365,27 @@ describe("cn serve: POST /message with steer", () => {
     expect(lastContent(requests[1])).toBe("also do c");
   });
 
+  it("rejects a message that is not text, and a steer that is not a boolean", async () => {
+    const { llmApi, requests } = scriptedModel(text("hi"));
+    await start(llmApi);
+
+    const objectBody = await post({ message: { a: 1 } });
+    const arrayBody = await post({ message: ["hi"] });
+    const blank = await post({ message: "   " });
+    const badSteer = await post({ message: "hello", steer: "yes" });
+    expect(objectBody.status).toBe(400);
+    expect(arrayBody.status).toBe(400);
+    expect(blank.status).toBe(400);
+    expect(badSteer.status).toBe(400);
+    expect(badSteer.body).toEqual({ error: "steer must be a boolean" });
+
+    const ok = await post({ message: "hello" });
+    expect(ok.status).toBe(200);
+    await idle;
+    expect(requests).toHaveLength(1);
+    expect(lastContent(requests[0])).toBe("hello");
+  });
+
   it("treats steer as a plain message when nothing is running", async () => {
     const { llmApi, requests } = scriptedModel(text("hi"));
     await start(llmApi);

@@ -1,4 +1,4 @@
-import type { LoopReminder, LoopState, TaskPlan } from "core/index.js";
+import type { LoopReminder, LoopState, TaskPlan, Usage } from "core/index.js";
 import type { ParallelRunResult } from "core/util/loopMode.js";
 
 import { captureWorktreeDiff } from "../commands/review/worktree.js";
@@ -15,10 +15,13 @@ import {
   createSession,
   getSessionLoop,
   getSessionUsage,
+  trackSessionUsage,
   updateSessionLoop,
   updateSessionTaskPlan,
 } from "../session.js";
 import { streamChatResponse } from "../stream/streamChatResponse.js";
+
+import { usageSince } from "./loopBudget.js";
 
 /**
  * A worker of a parallel wave (L4): one item of the loop run in a forked
@@ -47,6 +50,11 @@ export interface LoopWorkerInput {
   plan: TaskPlan;
   /** The item prompt (prepareItemRun); the plan block is added per request */
   prompt: string;
+  /**
+   * The parent's session usage when the worker started. The worker's own
+   * session begins there, so the budget includes tokens already spent.
+   */
+  baselineUsage?: Usage;
 }
 
 export interface LoopWorkerOutput {
@@ -58,7 +66,7 @@ export interface LoopWorkerOutput {
   reminders: LoopReminder[];
   /** The run's changes, as a unified diff from the worktree's baseline */
   patch: string;
-  usage: { promptTokens: number; completionTokens: number };
+  usage: Usage;
   /** Seconds the run took */
   duration: number;
   /** The run did not end on its own: what went wrong */
@@ -69,6 +77,8 @@ export interface LoopWorkerOutput {
 export type LoopWorkerMessage =
   | { type: "ready" }
   | { type: "run-item"; input: LoopWorkerInput }
+  /** Cumulative usage of this worker so far, so the parent can stop mid-item */
+  | { type: "usage"; usage: Usage }
   | { type: "result"; result: LoopWorkerOutput };
 
 const EMPTY_USAGE = { promptTokens: 0, completionTokens: 0 };
@@ -115,6 +125,17 @@ export async function runLoopItemHere(
       current: { ...input.loop.current, historyIndex },
     });
     services.chatHistory.addUserMessage(input.prompt);
+    if (input.baselineUsage) {
+      trackSessionUsage(0, input.baselineUsage);
+    }
+    const usageAtStart = getSessionUsage();
+    const reportUsage = () => {
+      if (typeof process.send !== "function") return;
+      process.send({
+        type: "usage",
+        usage: usageSince(usageAtStart, getSessionUsage()),
+      } satisfies LoopWorkerMessage);
+    };
 
     await streamChatResponse(
       services.chatHistory.getHistory(),
@@ -123,8 +144,9 @@ export async function runLoopItemHere(
       new AbortController(),
       undefined,
       false,
-      { persistSession: false },
+      { persistSession: false, onRequest: reportUsage },
     );
+    reportUsage();
 
     const after = getSessionLoop();
     const knownQuestions = new Set(input.loop.questions.map((q) => q.id));
@@ -146,10 +168,7 @@ export async function runLoopItemHere(
         (r) => !knownReminders.has(r.id),
       ),
       patch: captureWorktreeDiff(input.worktree),
-      usage: {
-        promptTokens: usage.promptTokens ?? 0,
-        completionTokens: usage.completionTokens ?? 0,
-      },
+      usage: usageSince(usageAtStart, usage),
       duration: (Date.now() - startTime) / 1000,
     };
   } finally {

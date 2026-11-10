@@ -18,6 +18,7 @@ import {
   enterWait,
   loopGrantKey,
   releaseEmptyWait,
+  loopBudgetStop,
   loopTokensFromUsage,
   describeHeldCall,
   itemTurnState,
@@ -1986,6 +1987,16 @@ describe("found by the sandbox run", () => {
       itemId: "1",
     });
   });
+});
+
+test("the token and time budgets are the same check an item run uses", () => {
+  const loop = loopOn(PLAN, { maxTokens: 100, maxWallMs: 60_000 });
+  expect(loopBudgetStop(loop, ctx(0, 99))).toBeUndefined();
+  expect(loopBudgetStop(loop, ctx(0, 100))).toMatchObject({ reason: "tokens" });
+  expect(loopBudgetStop(loop, ctx(1, 0))).toMatchObject({ reason: "time" });
+  // Zero means no limit
+  const open = loopOn(PLAN, { maxTokens: 0, maxWallMs: 0 });
+  expect(loopBudgetStop(open, ctx(10_000, 10_000_000))).toBeUndefined();
 });
 
 test("the token budget counts output and uncached input, not re-sent prompts", () => {

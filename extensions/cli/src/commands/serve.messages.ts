@@ -218,10 +218,10 @@ export function registerMessageRoutes(
     }
 
     const { message, steer } = req.body ?? {};
-    if (!message) {
+    if (typeof message !== "string" || !message.trim()) {
       return res.status(400).json({ error: "Message field is required" });
     }
-    if (steer !== undefined && typeof steer !== "boolean") {
+    if (typeof steer !== "undefined" && typeof steer !== "boolean") {
       return res.status(400).json({ error: "steer must be a boolean" });
     }
 

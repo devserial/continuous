@@ -910,7 +910,7 @@ export function loopTokensUsed(loop: LoopState, sessionTokens: number): number {
   return Math.max(0, sessionTokens - loop.tokensAtStart);
 }
 
-function budgetStop(
+export function loopBudgetStop(
   loop: LoopState,
   ctx: LoopContext,
 ): { reason: LoopStopReason; detail: string } | undefined {
@@ -958,7 +958,7 @@ export function decideNext(
   if (loop.stopRequested) {
     return { kind: "stop", reason: "stopped", detail: "You stopped the loop." };
   }
-  const overBudget = budgetStop(loop, ctx);
+  const overBudget = loopBudgetStop(loop, ctx);
   if (overBudget) {
     return { kind: "stop", ...overBudget };
   }
@@ -1425,6 +1425,8 @@ export function startItemRun(
      * resolved by modelForLoopItem); replaces what the last run recorded
      */
     model?: LoopItemModel;
+    /** The session's token total now, to count what this run uses */
+    sessionTokens?: number;
   } = {},
 ): LoopState {
   const state = itemState(loop, itemId);
@@ -1434,10 +1436,35 @@ export function startItemRun(
       attempts: (state?.attempts ?? 0) + 1,
       setAside: undefined,
       model: options.model,
+      overBudget: undefined,
     }),
     status: "running",
-    current: { kind: "item", itemId, historyIndex, startedAt: iso(now) },
+    current: {
+      kind: "item",
+      itemId,
+      historyIndex,
+      startedAt: iso(now),
+      ...(options.sessionTokens !== undefined
+        ? { tokensAtStart: options.sessionTokens }
+        : {}),
+    },
   };
+}
+
+/** Adds a run's tokens and time to the item's totals (what is unknown is not counted). */
+function addItemUsage(
+  loop: LoopState,
+  itemId: string,
+  add: { tokens?: number; ms?: number },
+): LoopState {
+  if (add.tokens === undefined && add.ms === undefined) return loop;
+  const prev = itemState(loop, itemId)?.usage;
+  return withItem(loop, itemId, {
+    usage: {
+      tokens: (prev?.tokens ?? 0) + Math.max(0, add.tokens ?? 0),
+      ms: (prev?.ms ?? 0) + Math.max(0, add.ms ?? 0),
+    },
+  });
 }
 
 /**
@@ -1491,11 +1518,20 @@ export function startCheck(
   };
 }
 
+/** What the item's row says when its check was not allowed to run. */
+function checkNotRunSummary(output: string | undefined): string {
+  const summary = output?.trim()
+    ? `check not run: ${output.trim()}`
+    : "check not run";
+  return summary.slice(0, LOOP_LIMITS.maxSummaryLength);
+}
+
 /**
  * The check ran, or could not. passed (exit 0): the item is done. failed:
  * the item runs again with the output, up to maxAttempts, then is failed.
- * refused (a rule refused the command, or the person did not allow it): the
- * item is done without its check.
+ * refused (a rule refused the command, the person did not allow it, or a
+ * headless run could not ask): the check did not run, so the item is failed,
+ * never done.
  */
 export function recordCheck(
   loop: LoopState,
@@ -1529,6 +1565,9 @@ export function recordCheck(
     status =
       (state?.attempts ?? 0) >= loop.budget.maxAttempts ? "failed" : "pending";
     summary = `The check failed${typeof result.exitCode === "number" ? ` (exit ${result.exitCode})` : ""}: ${result.command}`;
+  } else if (result.status === "refused") {
+    status = "failed";
+    summary = checkNotRunSummary(result.output);
   } else {
     status = "done";
   }
@@ -1670,15 +1709,37 @@ export function finishItemRun(
         needs?: string[];
       }
     | undefined,
-  /** The item's check (TaskItem.check): done then waits for it to pass */
-  options: { check?: string } = {},
+  /**
+   * The item's check (TaskItem.check): done then waits for it to pass. With
+   * `sessionTokens` and `now` the run's tokens and time are added to the
+   * item's usage.
+   */
+  options: { check?: string; sessionTokens?: number; now?: Date } = {},
 ): LoopState {
-  const itemId = loop.current?.itemId;
-  if (!itemId || loop.current?.kind !== "item") return loop;
-  return {
+  const current = loop.current;
+  const itemId = current?.itemId;
+  if (!current || !itemId || current.kind !== "item") return loop;
+  const finished: LoopState = {
     ...finishRunOf(loop, itemId, report, options, unreportedRun(loop)),
     current: undefined,
   };
+  // Over its own budget: failed, but not a failure of the loop's
+  const over = current.overBudget;
+  const recorded = over
+    ? {
+        ...withItem(finished, itemId, { overBudget: over }),
+        consecutiveFailures: loop.consecutiveFailures ?? 0,
+      }
+    : finished;
+  return addItemUsage(recorded, itemId, {
+    tokens:
+      options.sessionTokens !== undefined && current.tokensAtStart !== undefined
+        ? options.sessionTokens - current.tokensAtStart
+        : undefined,
+    ms: options.now
+      ? options.now.getTime() - new Date(current.startedAt).getTime()
+      : undefined,
+  });
 }
 
 /** What a worker of a parallel wave brings back when its run ends. */
@@ -1703,6 +1764,8 @@ export interface ParallelRunResult {
    * limit): the run counts as an attempt with this as the item's summary.
    */
   error?: string;
+  /** Tokens the worker used (output and uncached input), for the item's usage */
+  tokens?: number;
 }
 
 /**
@@ -1727,6 +1790,10 @@ export function finishParallelRun(
     const held = holdQuestion(next, { ...q, itemId }, now);
     if (held.ok) next = held.loop;
   }
+  next = addItemUsage(next, itemId, {
+    tokens: result.tokens,
+    ms: now.getTime() - new Date(run.startedAt).getTime(),
+  });
   const rest = (loop.parallel ?? []).filter((r) => r.itemId !== itemId);
   const parallel = rest.length ? rest : undefined;
   if (result.mergeFailed) {
@@ -2346,7 +2413,12 @@ function routeAnswer(
   state: LoopItemState | undefined,
   question: LoopQuestion | undefined,
   input: LoopAnswerInput,
-): { route: LoopAnswerRoute; itemChange?: Partial<LoopItemState> } {
+): {
+  route: LoopAnswerRoute;
+  itemChange?: Partial<LoopItemState>;
+  /** The person did not allow the item's check: record it as refused */
+  refuseCheck?: boolean;
+} {
   if (!state) return { route: input.standing ? "standing" : "replan" };
   const confirmsAssumption = !!input.confirm && question?.kind === "assumption";
   switch (state.status) {
@@ -2373,22 +2445,12 @@ function routeAnswer(
     case "running":
       return { route: confirmsAssumption ? "confirmed" : "steer" };
     case "checking":
-      // Allowing the check lets the loop run it; not allowing it leaves
-      // the item done without its check
+      // Allowing the check lets the loop run it. Not allowing it is a
+      // refused check: the caller records that, and the item is not done.
       if (question?.kind === "approval") {
         return input.approve
           ? { route: "confirmed" }
-          : {
-              route: "confirmed",
-              itemChange: {
-                status: "done",
-                check: {
-                  status: "refused",
-                  command: question.approval?.summary ?? "",
-                  at: question.askedAt,
-                },
-              },
-            };
+          : { route: "confirmed", refuseCheck: true };
       }
       return { route: confirmsAssumption ? "confirmed" : "next-run" };
     case "done":
@@ -2430,7 +2492,12 @@ export function answerLoop(
   if (itemId && !state) {
     return { ok: false, error: `No item ${itemId} in the loop` };
   }
-  const { route, itemChange } = routeAnswer(loop, state, question, input);
+  const { route, itemChange, refuseCheck } = routeAnswer(
+    loop,
+    state,
+    question,
+    input,
+  );
 
   const answer: LoopAnswer = {
     id: nextId("a", loop.answers),
@@ -2452,6 +2519,18 @@ export function answerLoop(
     ),
   };
   if (itemId && itemChange) next = withItem(next, itemId, itemChange);
+  if (refuseCheck && itemId) {
+    next = recordCheck(
+      next,
+      {
+        status: "refused",
+        command: question?.approval?.summary ?? "",
+        output: "Not allowed.",
+      },
+      now,
+      itemId,
+    );
+  }
   if (route === "redo") {
     next = checkInOnRedo(
       next,
@@ -2469,6 +2548,7 @@ export function answerLoop(
   const unblocks =
     route !== "confirmed" ||
     !!itemChange ||
+    !!refuseCheck ||
     (question?.kind === "approval" && !!input.approve);
   if (next.status === "waiting" && route !== "standing" && unblocks) {
     next = { ...next, status: "running", waitingSince: undefined };

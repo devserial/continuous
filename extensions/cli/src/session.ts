@@ -380,7 +380,10 @@ export function loadSession(): Session | null {
 
     const files = fs
       .readdirSync(sessionDir)
-      .filter((f) => f.endsWith(".json") && f !== "sessions.json")
+      .filter(
+        (f) =>
+          f.endsWith(".json") && f !== "sessions.json" && !f.includes(".tmp"),
+      )
       .map((f) => ({
         name: f,
         path: path.join(sessionDir, f),
@@ -388,15 +391,23 @@ export function loadSession(): Session | null {
       }))
       .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
-    if (files.length === 0) {
-      return null;
+    // Newest first. A truncated or half-written file is skipped; the temp
+    // files from an atomic save are not .json, so they are not candidates.
+    for (const file of files) {
+      try {
+        const session = JSON.parse(
+          fs.readFileSync(file.path, "utf8"),
+        ) as Session;
+        if (!session || typeof session !== "object" || Array.isArray(session)) {
+          continue;
+        }
+        SessionManager.getInstance().setSession(session);
+        return session;
+      } catch (error) {
+        logger.error("Error loading session:", error);
+      }
     }
-
-    // Load the most recent session
-    const session: Session = JSON.parse(fs.readFileSync(files[0].path, "utf8"));
-    // Set this as the current session for future saves
-    SessionManager.getInstance().setSession(session);
-    return session;
+    return null;
   } catch (error) {
     logger.error("Error loading session:", error);
     return null;

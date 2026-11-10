@@ -105,6 +105,14 @@ export function mcpNameMatch(pattern: string, toolName: string): boolean {
 import { commandCandidates } from "./candidates";
 import { effectsOfCommand, isEffect } from "./commandSpecs";
 import {
+  destinationsOf,
+  hostInNetSet,
+  isNetSet,
+  normalizeHost,
+  programName,
+  type NetSet,
+} from "./destinations";
+import {
   commandGlobMatch,
   hasUnsafeShellConstruct,
   parseCommand,
@@ -120,6 +128,62 @@ export { hasUnsafeShellConstruct, splitCommandParts } from "./command";
  * name matches nothing.
  */
 const EFFECT_PREFIX = "effect:";
+
+/**
+ * Destination rules (plans/command-analysis.md, P10), in deny and ask rules:
+ *
+ *   runTerminalCommand(host:*.aliyuncs.com)       any program reaching a host
+ *   runTerminalCommand(curl host:*.aliyuncs.com)  one program
+ *   runTerminalCommand(net:metadata)              a named set: metadata, local, private
+ *   runTerminalCommand(net:local,private)         several sets
+ *
+ * The destinations are read from the command (destinations.ts): URL operands
+ * and the flags that take a URL, git remotes, ssh, scp, rsync and nc hosts,
+ * with IPv4 spellings normalised (`2130706433` is 127.0.0.1) and the globs
+ * matched without regard to case. `*` matches any run of characters, so
+ * `*.aliyuncs.com` covers the sub-domains and `*aliyuncs.com` the domain too.
+ *
+ * A destination built from a variable or a substitution is not matched: the
+ * reader cannot know it, and that is not a promise it is safe (the command is
+ * unsure to the policy engine, and a program with no reader has no
+ * destinations here). An allow rule written this way never allows anything.
+ */
+const DESTINATION_RULE = /^(?:(\S+)\s+)?(host|net):(\S+)$/i;
+
+export function isDestinationPattern(pattern: string): boolean {
+  return DESTINATION_RULE.test(pattern.trim());
+}
+
+function matchesDestinationRule(
+  pattern: string,
+  candidates: string[],
+): boolean {
+  const m = DESTINATION_RULE.exec(pattern.trim());
+  if (!m) return false;
+  const program = m[1] ? programName(m[1]) : undefined;
+  const kind = m[2].toLowerCase();
+  const value = m[3];
+  const sets: NetSet[] =
+    kind === "net"
+      ? value
+          .split(",")
+          .map((n) => n.trim().toLowerCase())
+          .filter(isNetSet)
+      : [];
+  if (kind === "net" && sets.length === 0) return false;
+  const wantedHost = kind === "host" ? normalizeHost(value) : "";
+  return candidates.some((c) =>
+    destinationsOf(c).destinations.some((d) => {
+      if (program && d.program !== program) return false;
+      if (kind === "net") return sets.some((set) => hostInNetSet(d.host, set));
+      // A glob; an IPv4 written in another spelling is compared as dotted
+      return (
+        globMatch(value, d.host, true) ||
+        (!value.includes("*") && d.host === wantedHost)
+      );
+    }),
+  );
+}
 
 function matchesEffectRule(pattern: string, candidates: string[]): boolean {
   const wanted = pattern
@@ -158,9 +222,11 @@ export function matchTerminalCommand(
   // protection must not depend on how a command is capitalised.
   const hits = (rule: ParsedRule) =>
     rule.pattern === undefined ||
-    (rule.pattern.startsWith(EFFECT_PREFIX)
-      ? matchesEffectRule(rule.pattern, candidates)
-      : candidates.some((c) => commandGlobMatch(rule.pattern!, c, true)));
+    (isDestinationPattern(rule.pattern)
+      ? matchesDestinationRule(rule.pattern, candidates)
+      : rule.pattern.startsWith(EFFECT_PREFIX)
+        ? matchesEffectRule(rule.pattern, candidates)
+        : candidates.some((c) => commandGlobMatch(rule.pattern!, c, true)));
 
   for (const rule of toolRules) {
     if (rule.decision === "deny" && hits(rule))

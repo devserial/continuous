@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 
 import { BaseSessionMetadata, Session } from "../index.js";
 import { ListHistoryOptions } from "../protocol/core.js";
@@ -19,6 +20,157 @@ function safeParseArray<T>(
     console.warn(`${errorMessage}: ${e}`);
     return undefined;
   }
+}
+
+/**
+ * Replaces `file` by writing a temp file in the same directory and renaming
+ * it over the destination. A crash mid-write leaves the temp file, and
+ * readers keep seeing the previous complete file.
+ */
+function writeAtomic(file: string, contents: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // the temp file was already renamed, or never created
+    }
+    throw error;
+  }
+}
+
+const SESSIONS_LOCK_WAIT_MS = 5_000;
+const STALE_SESSIONS_LOCK_MS = 10_000;
+
+function sleepSync(ms: number): void {
+  const buffer = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buffer, 0, 0, ms);
+}
+
+/** One process at a time updates sessions.json. A lock older than 10s is stale. */
+function withSessionsLock<T>(fn: () => T): T {
+  const lockPath = `${getSessionsListPath()}.lock`;
+  const deadline = Date.now() + SESSIONS_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      try {
+        return fn();
+      } finally {
+        fs.closeSync(fd);
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // a waiter may have cleared a stale lock already
+        }
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw error;
+      try {
+        if (
+          Date.now() - fs.statSync(lockPath).mtimeMs >
+          STALE_SESSIONS_LOCK_MS
+        ) {
+          fs.unlinkSync(lockPath);
+        }
+      } catch {
+        // the holder released the lock between the stat and the unlink
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Could not lock the session list at ${lockPath}`);
+      }
+      sleepSync(25);
+    }
+  }
+}
+
+function metadataFromSessionFile(
+  file: string,
+): BaseSessionMetadata | undefined {
+  try {
+    const session = JSON.parse(fs.readFileSync(file, "utf8")) as Session;
+    if (!session || typeof session !== "object" || !session.sessionId) {
+      return undefined;
+    }
+    const messageCount = Array.isArray(session.history)
+      ? session.history.filter((item) => item?.message?.role === "assistant")
+          .length
+      : 0;
+    return {
+      sessionId: session.sessionId,
+      title: session.title ?? "",
+      dateCreated: String(fs.statSync(file).mtimeMs),
+      workspaceDirectory: session.workspaceDirectory ?? "",
+      messageCount,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Rebuild the list from the session files when sessions.json cannot be read. */
+function rebuildSessionsList(): BaseSessionMetadata[] {
+  const folder = getSessionsFolderPath();
+  return fs
+    .readdirSync(folder)
+    .filter(
+      (name) =>
+        name.endsWith(".json") &&
+        name !== "sessions.json" &&
+        !name.includes(".tmp"),
+    )
+    .flatMap((name) => {
+      const meta = metadataFromSessionFile(path.join(folder, name));
+      return meta ? [meta] : [];
+    });
+}
+
+/**
+ * The session list, or a list rebuilt from the session files when the file
+ * is empty or not valid JSON. A bad file is renamed aside so the next save
+ * can write a fresh one.
+ */
+function readSessionsList(file: string): BaseSessionMetadata[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  if (raw.trim() === "") return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new SyntaxError("sessions.json is not a list");
+    }
+    return parsed as BaseSessionMetadata[];
+  } catch (error) {
+    const backup = `${file}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(file, backup);
+    } catch {
+      // still rebuild; the bad file may be replaced by the next write
+    }
+    console.warn(
+      `sessions.json could not be read (${error instanceof Error ? error.message : String(error)}). It was backed up and the list was rebuilt from the session files.`,
+    );
+    return rebuildSessionsList();
+  }
+}
+
+function updateSessionsList(
+  update: (list: BaseSessionMetadata[]) => BaseSessionMetadata[],
+): void {
+  const file = getSessionsListPath();
+  withSessionsLock(() => {
+    const next = update(readSessionsList(file));
+    writeAtomic(file, JSON.stringify(next, undefined, 2));
+  });
 }
 
 export class HistoryManager {
@@ -65,22 +217,8 @@ export class HistoryManager {
     }
     fs.unlinkSync(sessionFile);
 
-    // Read and update the sessions list
-    const sessionsListFile = getSessionsListPath();
-    const sessionsListRaw = fs.readFileSync(sessionsListFile, "utf-8");
-    let sessionsList =
-      safeParseArray<BaseSessionMetadata>(
-        sessionsListRaw,
-        "Error parsing sessions.json",
-      ) ?? [];
-
-    sessionsList = sessionsList.filter(
-      (session) => session.sessionId !== sessionId,
-    );
-
-    fs.writeFileSync(
-      sessionsListFile,
-      JSON.stringify(sessionsList, undefined, 2),
+    updateSessionsList((sessionsList) =>
+      sessionsList.filter((session) => session.sessionId !== sessionId),
     );
   }
 
@@ -149,32 +287,16 @@ export class HistoryManager {
       orderedSession.loopRequested = true;
     }
 
-    fs.writeFileSync(
+    writeAtomic(
       getSessionFilePath(session.sessionId),
       JSON.stringify(orderedSession, undefined, 2),
     );
 
-    // Read and update the sessions list
-    const sessionsListFilePath = getSessionsListPath();
-    try {
-      const rawSessionsList = fs.readFileSync(sessionsListFilePath, "utf-8");
-
-      let sessionsList: BaseSessionMetadata[];
-      try {
-        sessionsList = JSON.parse(rawSessionsList);
-      } catch (e) {
-        if (rawSessionsList.trim() === "") {
-          fs.writeFileSync(sessionsListFilePath, JSON.stringify([]));
-          sessionsList = [];
-        } else {
-          throw e;
-        }
-      }
-
+    const messageCount = session.history.filter(
+      (item) => item.message.role === "assistant",
+    ).length;
+    updateSessionsList((sessionsList) => {
       let found = false;
-      const messageCount = session.history.filter(
-        (item) => item.message.role === "assistant",
-      ).length;
       for (const sessionMetadata of sessionsList) {
         if (sessionMetadata.sessionId === session.sessionId) {
           sessionMetadata.title = session.title;
@@ -184,32 +306,17 @@ export class HistoryManager {
           break;
         }
       }
-
       if (!found) {
-        const sessionMetadata: BaseSessionMetadata = {
+        sessionsList.push({
           sessionId: session.sessionId,
           title: session.title,
           dateCreated: String(Date.now()),
           workspaceDirectory: session.workspaceDirectory,
           messageCount,
-        };
-        sessionsList.push(sessionMetadata);
+        });
       }
-
-      fs.writeFileSync(
-        sessionsListFilePath,
-        JSON.stringify(sessionsList, undefined, 2),
-      );
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        throw new Error(
-          `It looks like there is a JSON formatting error in your sessions.json file (${sessionsListFilePath}). Please fix this before creating a new session.`,
-        );
-      }
-      throw new Error(
-        `It looks like there is a validation error in your sessions.json file (${sessionsListFilePath}). Please fix this before creating a new session. Error: ${error}`,
-      );
-    }
+      return sessionsList;
+    });
   }
 }
 

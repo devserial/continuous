@@ -10,13 +10,23 @@ import {
   blockingDependencies,
   describeLoopBudget,
   describeLoopReplan,
+  LOOP_AUTONOMY,
   loopReplanSetting,
   LoopReplanSetting,
+  loopTokensFromUsage,
   maxRoundsForReplan,
   unmetDependencies,
 } from "core/util/loopMode";
+import {
+  describeRoundUsage,
+  describeTimeUsage,
+  describeTokenUsage,
+  formatDuration,
+  formatTokenCount,
+  loopUsage,
+} from "core/util/loopUsage";
 import { useEffect, useState } from "react";
-import { useAppDispatch } from "../../redux/hooks";
+import { useAppDispatch, useAppSelector } from "../../redux/hooks";
 import {
   runLoopItemAgainThunk,
   setLoopBudgetThunk,
@@ -189,6 +199,88 @@ function ModelLine({ task, model }: { task: TaskItem; model?: LoopItemModel }) {
   );
 }
 
+/** One limit as a label, a bar and what is left; the bar warns from 80%. */
+function UsageMeter({
+  label,
+  testId,
+  fraction,
+  text,
+}: {
+  label: string;
+  testId: string;
+  fraction: number | undefined;
+  text: string;
+}) {
+  const tone =
+    fraction === undefined
+      ? "bg-description-muted"
+      : fraction >= 1
+        ? "bg-error"
+        : fraction >= 0.8
+          ? "bg-warning"
+          : "bg-link";
+  return (
+    <div
+      data-testid={testId}
+      className="flex min-w-0 items-center gap-1 text-description"
+    >
+      <span className="w-12 shrink-0">{label}</span>
+      <span className="h-1 w-16 shrink-0 overflow-hidden rounded bg-input">
+        <span
+          className={`block h-full ${tone}`}
+          style={{ width: `${Math.round((fraction ?? 0) * 100)}%` }}
+        />
+      </span>
+      <span className="min-w-0 truncate">{text}</span>
+    </div>
+  );
+}
+
+/**
+ * What the loop has used and what is left of each limit, with the totals: runs
+ * and items done. Shown once a budget has been set. The clock ticks while the
+ * loop runs.
+ */
+function LoopUsagePanel({ loop }: { loop: LoopState }) {
+  const sessionUsage = useAppSelector((s) => s.session.usage);
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    if (loop.status === "stopped") return;
+    const timer = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(timer);
+  }, [loop.status]);
+  const u = loopUsage(loop, {
+    sessionTokens: sessionUsage ? loopTokensFromUsage(sessionUsage) : 0,
+    now,
+  });
+  return (
+    <div data-testid="loop-usage" className="mt-1 flex flex-col gap-0.5">
+      <UsageMeter
+        label="Rounds"
+        testId="loop-usage-rounds"
+        fraction={u.rounds.max > 0 ? u.rounds.used / u.rounds.max : undefined}
+        text={describeRoundUsage(u.rounds)}
+      />
+      <UsageMeter
+        label="Tokens"
+        testId="loop-usage-tokens"
+        fraction={u.tokens.fraction}
+        text={describeTokenUsage(u.tokens)}
+      />
+      <UsageMeter
+        label="Time"
+        testId="loop-usage-time"
+        fraction={u.time.fraction}
+        text={describeTimeUsage(u.time)}
+      />
+      <div data-testid="loop-usage-totals" className="text-description-muted">
+        {u.items.done}/{u.items.total} done · {u.runs} run
+        {u.runs === 1 ? "" : "s"}
+      </div>
+    </div>
+  );
+}
+
 /** The limits as the editor's fields: rounds, tokens, minutes (0: no limit). */
 function draftOf(loop: LoopState) {
   return {
@@ -213,6 +305,16 @@ export function LoopControls({
   const dispatch = useAppDispatch();
   const [error, setError] = useState<string>();
   const [draft, setDraft] = useState(() => draftOf(loop));
+  // The limits are out of sight until asked for
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  // Once a budget has been set, or differs from the level's own, show what is left
+  const [budgetApplied, setBudgetApplied] = useState(false);
+  const preset = LOOP_AUTONOMY[loop.autonomy ?? "auto"].budget;
+  const showUsage =
+    budgetApplied ||
+    loop.budget.maxRounds !== preset.maxRounds ||
+    loop.budget.maxTokens !== preset.maxTokens ||
+    loop.budget.maxWallMs !== preset.maxWallMs;
   const { maxRounds, maxTokens, maxWallMs } = loop.budget;
   useEffect(() => setDraft(draftOf(loop)), [maxRounds, maxTokens, maxWallMs]);
 
@@ -266,6 +368,17 @@ export function LoopControls({
                   <span className="shrink-0 text-description-muted">
                     {statusLabel(loop, task.id)}
                   </span>
+                  {showUsage && state.attempts > 0 && (
+                    <span
+                      data-testid={`loop-runs-${task.id}`}
+                      className="shrink-0 text-description-muted"
+                    >
+                      {state.attempts} run{state.attempts === 1 ? "" : "s"}
+                      {state.usage
+                        ? ` · ${formatTokenCount(state.usage.tokens)} tokens · ${formatDuration(state.usage.ms)}`
+                        : ""}
+                    </span>
+                  )}
                   {canSkip && (
                     <button
                       type="button"
@@ -343,47 +456,70 @@ export function LoopControls({
             className={FIELD}
           />
         )}
-      </div>
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-        {(
-          [
-            ["rounds", "Rounds"],
-            ["tokens", "Tokens (0: none)"],
-            ["minutes", "Minutes (0: none)"],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key} className="flex shrink-0 items-center gap-0.5">
-            {label}
-            <input
-              type="number"
-              data-testid={`loop-limit-${key}`}
-              min={0}
-              value={draft[key]}
-              onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-              className={FIELD}
-            />
-          </label>
-        ))}
         <button
           type="button"
-          data-testid="loop-limits-apply"
-          className={BUTTON}
+          data-testid="loop-budget-toggle"
+          aria-expanded={budgetOpen}
           title={describeLoopBudget(loop.budget)}
-          onClick={async () =>
-            report(
-              await dispatch(
+          className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-xs text-link hover:underline"
+          onClick={() => {
+            if (budgetOpen) setDraft(draftOf(loop));
+            setBudgetOpen(!budgetOpen);
+          }}
+        >
+          {budgetOpen ? "Hide the budget" : "Set a budget…"}
+        </button>
+      </div>
+      {showUsage && <LoopUsagePanel loop={loop} />}
+      {budgetOpen && (
+        <div
+          data-testid="loop-budget"
+          className="mt-1 flex min-w-0 flex-wrap items-center gap-1"
+        >
+          {(
+            [
+              ["rounds", "Rounds"],
+              ["tokens", "Tokens (0: none)"],
+              ["minutes", "Minutes (0: none)"],
+            ] as const
+          ).map(([key, label]) => (
+            <label key={key} className="flex shrink-0 items-center gap-0.5">
+              {label}
+              <input
+                type="number"
+                data-testid={`loop-limit-${key}`}
+                min={0}
+                value={draft[key]}
+                onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                className={FIELD}
+              />
+            </label>
+          ))}
+          <button
+            type="button"
+            data-testid="loop-limits-apply"
+            className={BUTTON}
+            title={describeLoopBudget(loop.budget)}
+            onClick={async () => {
+              const result = await dispatch(
                 setLoopBudgetThunk({
                   maxRounds: Number(draft.rounds),
                   maxTokens: Number(draft.tokens),
                   maxWallMs: Math.round(Number(draft.minutes) * 60000),
                 }),
-              ).unwrap(),
-            )
-          }
-        >
-          Apply
-        </button>
-      </div>
+              ).unwrap();
+              report(result);
+              // Applied: the fields go away; a refusal keeps them open
+              if (result.ok) {
+                setBudgetOpen(false);
+                setBudgetApplied(true);
+              }
+            }}
+          >
+            Apply
+          </button>
+        </div>
+      )}
       {error && (
         <div
           role="alert"

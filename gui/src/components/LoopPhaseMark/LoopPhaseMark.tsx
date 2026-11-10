@@ -7,11 +7,21 @@ import {
 } from "../../redux/selectors/selectLoopPhase";
 import { LOOP_COLORS } from "../mainInput/GradientBorder";
 
-/** How far the mark is turned for each half: planning up, building flipped. */
-const ANGLE: Partial<Record<LoopPhase, number>> = {
-  planning: 0,
-  building: 180,
+type Half = "planning" | "building";
+
+const HALF: Partial<Record<LoopPhase, Half>> = {
+  planning: "planning",
+  building: "building",
 };
+
+/**
+ * The two halves of the figure eight, each running from the crossing around
+ * its own lobe (the same curves as the Continuous logo, brand-src/mark.svg).
+ */
+const PLANNING_PATH =
+  "M256 256 C212 172 100 172 100 256 C100 340 212 340 256 256";
+const BUILDING_PATH =
+  "M256 256 C300 172 412 172 412 256 C412 340 300 340 256 256";
 
 interface LoopPhaseMarkProps {
   className?: string;
@@ -20,18 +30,25 @@ interface LoopPhaseMarkProps {
 }
 
 /**
- * A yin and yang for Loop: one half is planning (cyan), the other building
- * (indigo), and the disc turns over to show which turn the loop is in. It
- * stays where it was when the loop rests, dimmed, so a glance still says what
- * it last did.
+ * Loop's mark: the Continuous infinity as a yin and yang. The left lobe is
+ * planning (cyan), the right building (indigo), and each carries a bead of the
+ * other's colour, diagonally opposite, so the figure turns into itself. The lobe of the turn the loop is in is lit and the other
+ * dims; at rest the mark dims as a whole and keeps the lobe it last used lit,
+ * so a glance still says what the loop did last.
  */
 export function LoopPhaseMark({ className, label }: LoopPhaseMarkProps) {
   const phase = useAppSelector(selectLoopPhase);
-  // A rest keeps the angle of the turn before it
-  const angle = useRef(0);
-  if (ANGLE[phase] !== undefined) angle.current = ANGLE[phase]!;
-  const resting = ANGLE[phase] === undefined;
+  // A rest keeps the half of the turn before it
+  const last = useRef<Half | undefined>(undefined);
+  if (HALF[phase]) last.current = HALF[phase];
+  const resting = HALF[phase] === undefined;
+  const lit = last.current;
   const text = LOOP_PHASE_LABEL[phase];
+
+  const lobe = (half: Half) => ({
+    opacity: lit === undefined || lit === half ? 1 : 0.35,
+    transition: "opacity 500ms ease",
+  });
 
   return (
     <span
@@ -41,30 +58,44 @@ export function LoopPhaseMark({ className, label }: LoopPhaseMarkProps) {
       className="inline-flex items-center gap-1"
     >
       <svg
-        viewBox="0 0 32 32"
+        viewBox="70 160 372 192"
         role="img"
         aria-label={`Loop: ${text}`}
-        className={className ?? "h-3.5 w-3.5"}
+        data-lit={lit ?? "both"}
+        className={className ?? "h-3 w-6"}
         style={{ opacity: resting ? 0.55 : 1 }}
       >
         <g
-          data-testid="loop-phase-disc"
-          style={{
-            transform: `rotate(${angle.current}deg)`,
-            transformOrigin: "16px 16px",
-            transition: "transform 700ms cubic-bezier(0.65, 0, 0.35, 1)",
-          }}
+          data-testid="loop-phase-planning"
+          style={lobe("planning")}
           className="motion-reduce:!transition-none"
         >
-          {/* planning half, with the building dot in its bulb */}
-          <circle cx="16" cy="16" r="15" fill={LOOP_COLORS.cyan} />
-          {/* building half */}
           <path
-            d="M16 1 A15 15 0 0 1 16 31 A7.5 7.5 0 0 1 16 16 A7.5 7.5 0 0 0 16 1 Z"
-            fill={LOOP_COLORS.indigo}
+            d={PLANNING_PATH}
+            fill="none"
+            stroke={LOOP_COLORS.cyan}
+            strokeWidth="52"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
-          <circle cx="16" cy="8.5" r="2.6" fill={LOOP_COLORS.indigo} />
-          <circle cx="16" cy="23.5" r="2.6" fill={LOOP_COLORS.ice} />
+          {/* building's colour, a bead on the planning lobe */}
+          <circle cx="161.5" cy="319" r="34" fill={LOOP_COLORS.indigo} />
+        </g>
+        <g
+          data-testid="loop-phase-building"
+          style={lobe("building")}
+          className="motion-reduce:!transition-none"
+        >
+          <path
+            d={BUILDING_PATH}
+            fill="none"
+            stroke={LOOP_COLORS.indigo}
+            strokeWidth="52"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {/* planning's colour, a bead on the building lobe */}
+          <circle cx="350.5" cy="193" r="34" fill={LOOP_COLORS.cyan} />
         </g>
       </svg>
       {label && <span>{text}</span>}

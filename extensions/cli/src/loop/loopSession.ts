@@ -18,6 +18,7 @@ import {
   interruptLoop,
   LOOP_CLI_TOOL_NAMES,
   loopPolicyOf,
+  loopTokensFromUsage,
   requestStop,
   resumeLoop,
   runItemAgain,
@@ -192,10 +193,14 @@ function afterLoopEnded(): void {
   notifyModeEntry();
 }
 
-/** Prompt plus completion tokens the session has used, for the budgets. */
+/**
+ * Tokens the loop's budget counts: the same figure as core's
+ * loopTokensFromUsage (output, and input the provider did not read from
+ * its cache). Counting the whole prompt again charges cached text on every
+ * request.
+ */
 export function sessionTokens(): number {
-  const usage = getSessionUsage();
-  return (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+  return loopTokensFromUsage(getSessionUsage());
 }
 
 /**

@@ -1,9 +1,15 @@
+import * as fs from "fs";
+
 import { v4 as uuidv4 } from "uuid";
 
 import { Session } from "..";
 import { NEW_SESSION_TITLE } from "./constants";
 import historyManager from "./history";
-import { getSessionFilePath } from "./paths";
+import {
+  getSessionFilePath,
+  getSessionsFolderPath,
+  getSessionsListPath,
+} from "./paths";
 
 const sessionId = uuidv4();
 const testSession: Session = {
@@ -302,5 +308,79 @@ describe("Many sessions created", () => {
     }
     sessions = historyManager.list({});
     expect(sessions.length).toBe(0);
+  });
+});
+
+describe("Session saves are atomic", () => {
+  const session: Session = {
+    history: [],
+    title: "Atomic",
+    workspaceDirectory: "workspaceDir",
+    sessionId: "atomic-save",
+  };
+
+  test("the session file and the list are replaced, not written in place", () => {
+    historyManager.save(session);
+    const sessionFile = getSessionFilePath(session.sessionId);
+    const listFile = getSessionsListPath();
+    const sessionInode = fs.statSync(sessionFile).ino;
+    const listInode = fs.statSync(listFile).ino;
+
+    historyManager.save({ ...session, title: "Atomic 2" });
+
+    // rename onto the destination gives it a new inode; writeFileSync in
+    // place keeps the old one
+    expect(fs.statSync(sessionFile).ino).not.toBe(sessionInode);
+    expect(fs.statSync(listFile).ino).not.toBe(listInode);
+    expect(
+      fs
+        .readdirSync(getSessionsFolderPath())
+        .filter((name) => name.includes(".tmp")),
+    ).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(sessionFile, "utf8")).title).toBe(
+      "Atomic 2",
+    );
+  });
+
+  test("a corrupt sessions.json is backed up and the list is rebuilt", () => {
+    const listFile = getSessionsListPath();
+    fs.writeFileSync(listFile, "{not json");
+    expect(() =>
+      historyManager.save({
+        ...session,
+        sessionId: "after-corrupt",
+        title: "After",
+      }),
+    ).not.toThrow();
+
+    const sessions = historyManager.list({});
+    expect(sessions.some((s) => s.sessionId === "atomic-save")).toBe(true);
+    expect(sessions.some((s) => s.sessionId === "after-corrupt")).toBe(true);
+    expect(
+      fs
+        .readdirSync(getSessionsFolderPath())
+        .some((name) => name.startsWith("sessions.json.corrupt-")),
+    ).toBe(true);
+    expect(JSON.parse(fs.readFileSync(listFile, "utf8"))).toEqual(
+      expect.any(Array),
+    );
+  });
+
+  test("a stale lock does not block the next save", () => {
+    const lock = `${getSessionsListPath()}.lock`;
+    fs.writeFileSync(lock, "");
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+    expect(() =>
+      historyManager.save({
+        ...session,
+        sessionId: "after-lock",
+        title: "Unlocked",
+      }),
+    ).not.toThrow();
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(
+      historyManager.list({}).some((s) => s.sessionId === "after-lock"),
+    ).toBe(true);
   });
 });

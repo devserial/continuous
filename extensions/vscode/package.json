@@ -2,7 +2,7 @@
   "name": "continuous",
   "icon": "media/icon.png",
   "author": "b1tninja",
-  "version": "2.8.1",
+  "version": "2.8.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/b1tninja/continuous"
@@ -168,7 +168,7 @@
             "Windows only: run the agent's terminal commands in bash inside a WSL distribution."
           ],
           "default": "default",
-          "markdownDescription": "Where the agent's terminal commands run. With `wsl` on Windows, each command runs through `wsl.exe` in bash, starting in the workspace folder (a Windows drive appears as `/mnt/c`). It does not change the shell of VS Code's own terminal. It is not isolation by itself: a WSL distribution can reach your Windows drives."
+          "markdownDescription": "Where the agent's terminal commands run. With `wsl` on Windows, each command runs through `wsl.exe` in bash, starting in the workspace folder (a Windows drive appears as `/mnt/c`). It does not change the shell of VS Code's own terminal. It is not isolation by itself: a WSL distribution can reach your Windows drives. Windows only: elsewhere the setting is ignored. Without a distribution installed, commands are not run and you are shown how to install one (`wsl --install` in an administrator PowerShell, then restart)."
         },
         "continuous.terminal.wslDistro": {
           "type": "string",

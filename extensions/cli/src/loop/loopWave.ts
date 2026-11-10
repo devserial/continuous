@@ -1,10 +1,13 @@
 import { execSync, fork } from "child_process";
 
-import type { LoopReminder, LoopState, TaskItem } from "core/index.js";
+import type { LoopReminder, LoopState, TaskItem, Usage } from "core/index.js";
 import {
   finishParallelRun,
+  loopBudgetStop,
+  loopTokensFromUsage,
   runItemInline,
   startParallelRun,
+  stopLoop,
 } from "core/util/loopMode.js";
 
 import {
@@ -21,14 +24,17 @@ import type { ConfigServiceState } from "../services/types.js";
 import {
   getSessionLoop,
   getSessionTaskPlan,
+  getSessionUsage,
   trackSessionUsage,
 } from "../session.js";
 import { logger } from "../util/logger.js";
 
+import { usageSince } from "./loopBudget.js";
 import { prepareItemRun } from "./loopItemRun.js";
 import {
   commitLoop,
   planFileDisplayPath,
+  sessionTokens,
   setWaveAbort,
 } from "./loopSession.js";
 import {
@@ -141,6 +147,9 @@ const defaultRunWorker: LoopWorkerRunner = (input, signal) =>
     child.on("message", (msg: LoopWorkerMessage) => {
       if (msg.type === "ready") {
         child.send({ type: "run-item", input } satisfies LoopWorkerMessage);
+      } else if (msg.type === "usage") {
+        const itemId = input.loop.current?.itemId;
+        if (itemId) recordWorkerUsage(itemId, msg.usage);
       } else if (msg.type === "result") {
         settle(msg.result);
       }
@@ -214,6 +223,7 @@ export async function startWave(
   if (!plan || !saved) return;
   let loop: LoopState = saved;
   const planFile = planFileDisplayPath();
+  const baselineUsage = getSessionUsage();
   const started: {
     item: TaskItem;
     worktree: string;
@@ -251,6 +261,7 @@ export async function startWave(
         model: loopWorkerModelName(item.model),
         plan,
         prompt: prepared.prompt,
+        baselineUsage,
         // The worker's loop names this item as its run; the others of the
         // wave show as running beside it
         loop: {
@@ -276,6 +287,47 @@ export async function startWave(
       onSettled();
     });
   }
+}
+
+const reportedUsage = new Map<string, Usage>();
+
+function usageToCount(usage: Usage): boolean {
+  return (
+    usage.promptTokens > 0 ||
+    usage.completionTokens > 0 ||
+    (usage.promptTokensDetails?.cachedTokens ?? 0) > 0 ||
+    (usage.promptTokensDetails?.cacheWriteTokens ?? 0) > 0
+  );
+}
+
+/** Stop the loop when worker usage has spent the token or time budget. */
+function stopWaveIfOverBudget(): void {
+  const loop = getSessionLoop();
+  if (!loop || loop.status === "stopped") return;
+  const stop = loopBudgetStop(loop, {
+    now: new Date(),
+    sessionTokens: sessionTokens(),
+  });
+  if (!stop) return;
+  commitLoop(stopLoop(loop, stop.reason, stop.detail));
+  abortWave();
+}
+
+/**
+ * Add a worker's cumulative usage to the session, counting only what was not
+ * reported yet. `reported` is the worker's own usage since it started, cache
+ * included, so the budget uses the same loopTokensFromUsage as an inline run.
+ * Returns whether the loop is still running that item.
+ */
+export function recordWorkerUsage(itemId: string, reported: Usage): boolean {
+  const delta = usageSince(
+    reportedUsage.get(itemId) ?? { promptTokens: 0, completionTokens: 0 },
+    reported,
+  );
+  reportedUsage.set(itemId, reported);
+  if (usageToCount(delta)) trackSessionUsage(0, delta);
+  stopWaveIfOverBudget();
+  return !!getSessionLoop()?.parallel?.some((run) => run.itemId === itemId);
 }
 
 async function runOne(
@@ -318,16 +370,19 @@ async function settleRun(
   entry: { item: TaskItem; input: LoopWorkerInput },
   output: LoopWorkerOutput,
 ): Promise<void> {
+  // Usage first, including a worker that already reported some of it: the
+  // budget can stop the wave here, before the patch is applied.
+  if (!recordWorkerUsage(entry.item.id, output.usage)) {
+    reportedUsage.delete(entry.item.id);
+    return;
+  }
+  reportedUsage.delete(entry.item.id);
   const loop = getSessionLoop();
-  // The loop stopped or was reset while the worker ran: nothing to record
-  if (!loop?.parallel?.some((r) => r.itemId === entry.item.id)) return;
+  if (!loop) return;
   let mergeFailed: string | undefined;
   if (!output.error && output.patch.trim()) {
     const applied = await deps.worktrees.apply(output.patch);
     if (!applied.ok) mergeFailed = applied.reason;
-  }
-  if (output.usage.promptTokens || output.usage.completionTokens) {
-    trackSessionUsage(0, output.usage);
   }
   const finished = finishParallelRun(
     loop,
@@ -337,6 +392,7 @@ async function settleRun(
       questions: output.questions,
       mergeFailed,
       error: output.error,
+      tokens: loopTokensFromUsage(output.usage),
     },
     new Date(),
     { check: entry.item.check },

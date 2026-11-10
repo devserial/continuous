@@ -400,6 +400,34 @@ describe("SessionManager", () => {
       expect(result).toEqual(mockSession);
       expect(getCurrentSession()).toEqual(mockSession);
     });
+
+    it("skips a truncated newest file and loads the next one", () => {
+      const older: Session = {
+        sessionId: "older",
+        title: "Older",
+        workspaceDirectory: "/test/workspace",
+        history: [],
+      };
+      mockFs.readdirSync.mockReturnValue([
+        "older.json" as any,
+        "newest.json" as any,
+        "session.json.4242.tmp" as any,
+      ]);
+      mockFs.statSync
+        .mockReturnValueOnce({ mtime: new Date("2023-01-01") } as any)
+        .mockReturnValueOnce({ mtime: new Date("2023-01-03") } as any);
+      mockFs.readFileSync.mockImplementation((file: any) => {
+        if (String(file).includes("newest")) return "{truncated";
+        return JSON.stringify(older);
+      });
+
+      const result = loadSession();
+
+      expect(result).toEqual(older);
+      expect(String(mockFs.readFileSync.mock.calls[0][0])).toContain(
+        "newest.json",
+      );
+    });
   });
 
   describe("clearSession", () => {

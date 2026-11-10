@@ -362,7 +362,7 @@ describe("checks", () => {
     expect(decideNext(allowed.loop, p, ctx)).toMatchObject({ kind: "check" });
   });
 
-  test("not allowing the check leaves the item done without it", () => {
+  test("not allowing the check leaves the item failed, not done", () => {
     let loop = startCheck(run(loopOn(p), p, "1"), "1", 0, T0);
     const held = holdQuestion(
       loop,
@@ -386,8 +386,38 @@ describe("checks", () => {
       T0,
     );
     if (!refused.ok) throw new Error(refused.error);
-    expect(status(refused.loop, "1")).toBe("done");
+    expect(status(refused.loop, "1")).toBe("failed");
+    expect(refused.loop.items[0].summary).toBe("check not run: Not allowed.");
     expect(refused.loop.items[0].check?.status).toBe("refused");
+    expect(refused.loop.doneThisRound).toBe(0);
+    // Docs can still run; the refused item does not count as finished
+    expect(decideNext(refused.loop, p, ctx)).toEqual({
+      kind: "run",
+      itemId: "2",
+    });
+  });
+
+  test("a check a rule refuses fails the item instead of marking it done", () => {
+    const only = plan({ text: "Helper", check: "npm test -- retry" });
+    let loop = startCheck(run(loopOn(only), only, "1"), "1", 0, T0);
+    loop = recordCheck(
+      loop,
+      {
+        status: "refused",
+        command: "npm test -- retry",
+        output: "A rule refused the command.",
+      },
+      T0,
+    );
+    expect(status(loop, "1")).toBe("failed");
+    expect(loop.items[0].summary).toBe(
+      "check not run: A rule refused the command.",
+    );
+    expect(loop.items[0].check?.status).toBe("refused");
+    expect(loop.doneThisRound).toBe(0);
+    expect(loop.consecutiveFailures).toBe(1);
+    const next = decideNext(loop, only, ctx);
+    expect(next.kind === "stop" && next.reason === "done").toBe(false);
   });
 
   test("an item cannot be skipped while its check runs", () => {

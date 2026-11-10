@@ -141,16 +141,16 @@ describe("a request with a use of its own", () => {
   });
 
   it("is not the Loop item's use when a subagent is started from one", async () => {
-    const T0 = new Date("2026-11-08T12:00:00Z");
+    const now = new Date();
     const plan = {
       items: [{ id: "1", text: "Fix", status: "in_progress" as const }],
-      updatedAt: T0.toISOString(),
+      updatedAt: now.toISOString(),
     };
     session.loop = startItemRun(
-      createLoop(plan, { now: T0, sessionTokens: 0 }),
+      createLoop(plan, { now, sessionTokens: 0 }),
       "1",
       2,
-      T0,
+      now,
     );
 
     const itemRequest = await request();
