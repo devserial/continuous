@@ -8,14 +8,20 @@ import {
   belowIndexDecorationType,
   indexDecorationType,
 } from "./decorations";
-
-import type { ApplyState, DiffLine } from "core";
-import type { VerticalDiffCodeLens } from "./manager";
 import { getFirstChangedLine } from "./util";
+
+import type { VerticalDiffCodeLens } from "./manager";
+import type { ApplyState, DiffLine } from "core";
 
 export interface VerticalDiffHandlerOptions {
   input?: string;
   instant?: boolean;
+  /**
+   * Document version captured before the apply. When set, a newer version
+   * means the person edited the file and the replacement is skipped.
+   * Streaming applies omit this: those edits change the version themselves.
+   */
+  expectedVersion?: number;
   onStatusUpdate: (
     status?: ApplyState["status"],
     numDiffs?: ApplyState["numDiffs"],
@@ -204,6 +210,9 @@ export class VerticalDiffHandler implements vscode.Disposable {
       await this.insertDeletionBuffer();
 
       const myersDiffs = await this.reapplyWithMyersDiff(diffLines);
+      if (!myersDiffs) {
+        return diffLines;
+      }
 
       // Scroll to the first diff
       const scrollToLine =
@@ -321,11 +330,23 @@ export class VerticalDiffHandler implements vscode.Disposable {
    * and decide to follow up with a deterministic algorithm like Myers Diff once
    * we have received all of the diff lines.
    */
-  async reapplyWithMyersDiff(diffLines: DiffLine[]) {
+  async reapplyWithMyersDiff(
+    diffLines: DiffLine[],
+  ): Promise<DiffLine[] | undefined> {
     // Diff is messed up without this delay.
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     await this.ensureCurrentFileIsFocused();
+
+    if (
+      this.options.expectedVersion !== undefined &&
+      this.editor.document.version !== this.options.expectedVersion
+    ) {
+      void vscode.window.showErrorMessage(
+        "The file changed before the edit could be applied.",
+      );
+      return undefined;
+    }
 
     // First, we reset the original diff by rejecting all pending diff blocks
     const blocks = this.editorToVerticalDiffCodeLens.get(this.fileUri) ?? [];

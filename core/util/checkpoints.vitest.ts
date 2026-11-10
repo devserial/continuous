@@ -9,6 +9,7 @@ import {
   planRestore,
   previewRestore,
   pruneCheckpointsFrom,
+  checkpointHoldsSecret,
   resolveCheckpointTargets,
   snapshotFile,
 } from "./checkpoints";
@@ -142,6 +143,31 @@ describe("snapshotFile", () => {
       existed: true,
       skipped: "too_large",
     });
+  });
+
+  it("skips multi-byte text that is under the character cap but over the byte cap", async () => {
+    const content = "你".repeat(30_001);
+    const ide = makeIde({ [`${WS}/cjk.ts`]: content });
+    expect(content.length).toBeLessThan(MAX_CHECKPOINT_FILE_BYTES);
+    expect(await snapshotFile(ide, `${WS}/cjk.ts`)).toEqual({
+      uri: `${WS}/cjk.ts`,
+      existed: true,
+      skipped: "too_large",
+    });
+  });
+
+  it("does not store the contents of a secret file", async () => {
+    const uri = `${WS}/.env`;
+    const ide = makeIde({ [uri]: "API_KEY=secret-value" });
+    expect(checkpointHoldsSecret(uri)).toBe(true);
+    expect(await snapshotFile(ide, uri)).toEqual({
+      uri,
+      existed: true,
+      skipped: "secret",
+    });
+    expect(JSON.stringify(await snapshotFile(ide, uri))).not.toContain(
+      "secret-value",
+    );
   });
 
   it("does not throw when the IDE fails", async () => {
@@ -366,6 +392,35 @@ describe("restore", () => {
     expect(items.map((i) => i.action)).toEqual(["unrestorable"]);
     expect(result.restored).toEqual([]);
     expect(ide.files.get(`${WS}/big.ts`)).toBe("small");
+  });
+
+  it("keeps snapshots for files that failed to restore", () => {
+    const cps: TurnCheckpoint[] = [
+      {
+        turnId: "t1",
+        createdAt: 1,
+        files: [
+          { uri: "a", existed: true, content: "a0" },
+          { uri: "b", existed: true, content: "b0" },
+        ],
+      },
+      {
+        turnId: "t2",
+        createdAt: 2,
+        files: [{ uri: "a", existed: true, content: "a1" }],
+      },
+    ];
+    const kept = pruneCheckpointsFrom(cps, ["t1", "t2"], "t1", new Set(["b"]));
+    expect(kept).toEqual([
+      {
+        turnId: "t1",
+        createdAt: 1,
+        files: [{ uri: "b", existed: true, content: "b0" }],
+      },
+    ]);
+    expect(planRestore(kept, ["t1", "t2"], "t1")).toEqual([
+      { uri: "b", existed: true, content: "b0" },
+    ]);
   });
 
   it("collects write failures instead of throwing", async () => {

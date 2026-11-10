@@ -7,6 +7,8 @@ import {
   RawMessageDeltaEvent,
   RawMessageStartEvent,
   RawMessageStreamEvent,
+  ImageBlockParam,
+  TextBlockParam,
   Tool,
   ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources";
@@ -151,9 +153,7 @@ export class AnthropicApi implements BaseLlmApi {
       stop = [oaiBody.stop];
     }
 
-    const systemMessage = oaiBody.messages.find(
-      (msg) => msg.role === "system",
-    )?.content;
+    const systemMessage = this.systemBlocks(oaiBody.messages);
 
     // TODO support custom tools
     const functionTools = oaiBody.tools?.filter((t) => t.type === "function");
@@ -184,17 +184,11 @@ export class AnthropicApi implements BaseLlmApi {
 
     const anthropicBody: MessageCreateParams = {
       messages: this._convertMessages(
-        oaiBody.messages.filter((msg) => msg.role !== "system"),
+        oaiBody.messages.filter(
+          (msg) => msg.role !== "system" && msg.role !== "developer",
+        ),
       ),
-      system:
-        typeof systemMessage === "string"
-          ? [
-              {
-                type: "text",
-                text: systemMessage,
-              },
-            ]
-          : systemMessage,
+      system: systemMessage,
       // This adapter sends no thinking block, so only the both-set rule applies
       ...anthropicSamplingParams(
         oaiBody.temperature ?? undefined,
@@ -270,9 +264,12 @@ export class AnthropicApi implements BaseLlmApi {
             } else {
               console.warn(
                 "Anthropic: skipping image with invalid data URL format",
-                dataUrl,
               );
             }
+          } else if (dataUrl) {
+            console.warn(
+              "Anthropic: skipping an image URL that is not a data URL. The image was left out of the request.",
+            );
           }
         } else {
           const text = part.type === "text" ? part.text : part.refusal;
@@ -292,6 +289,64 @@ export class AnthropicApi implements BaseLlmApi {
     return blocks;
   }
 
+  private systemBlocks(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  ): MessageCreateParams["system"] {
+    const blocks: Array<{
+      type: "text";
+      text: string;
+      cache_control?: unknown;
+    }> = [];
+    for (const msg of messages) {
+      if (msg.role !== "system" && msg.role !== "developer") {
+        continue;
+      }
+      const content = msg.content;
+      if (typeof content === "string") {
+        if (content) {
+          blocks.push({ type: "text", text: content });
+        }
+        continue;
+      }
+      if (!Array.isArray(content)) {
+        continue;
+      }
+      for (const part of content) {
+        if (part.type === "text" && part.text) {
+          const cache_control = (part as { cache_control?: unknown })
+            .cache_control;
+          blocks.push({
+            type: "text",
+            text: part.text,
+            ...(cache_control ? { cache_control } : {}),
+          });
+        } else if (
+          "refusal" in part &&
+          typeof part.refusal === "string" &&
+          part.refusal
+        ) {
+          blocks.push({ type: "text", text: part.refusal });
+        }
+      }
+    }
+    return blocks.length
+      ? (blocks as MessageCreateParams["system"])
+      : undefined;
+  }
+
+  private toolResultContent(
+    content:
+      string | OpenAI.Chat.Completions.ChatCompletionContentPart[] | null,
+  ): string | Array<TextBlockParam | ImageBlockParam> {
+    if (typeof content === "string" || content == null) {
+      return content ?? "";
+    }
+    return this.convertMessageContentToBlocks(content).filter(
+      (block): block is TextBlockParam | ImageBlockParam =>
+        block.type === "text" || block.type === "image",
+    );
+  }
+
   private getContentBlocksFromChatMessage(
     message: OpenAI.Chat.Completions.ChatCompletionMessageParam,
   ): ContentBlockParam[] {
@@ -302,7 +357,7 @@ export class AnthropicApi implements BaseLlmApi {
           {
             type: "tool_result",
             tool_use_id: message.tool_call_id,
-            content: message.content,
+            content: this.toolResultContent(message.content),
             // Tool messages carry cache_control on the message itself.
             ...((message as any).cache_control
               ? { cache_control: (message as any).cache_control }
@@ -337,7 +392,9 @@ export class AnthropicApi implements BaseLlmApi {
   private _convertMessages(
     msgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   ): MessageParam[] {
-    const nonSystemMessages = msgs.filter((m) => m.role !== "system");
+    const nonSystemMessages = msgs.filter(
+      (m) => m.role !== "system" && m.role !== "developer",
+    );
 
     const convertedMessages: MessageParam[] = [];
     let currentRole: "user" | "assistant" | undefined = undefined;

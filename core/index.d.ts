@@ -877,7 +877,7 @@ export interface FileCheckpoint {
   /** Prior contents. Absent when `existed` is false or the file was skipped */
   content?: string;
   /** Why the contents were not stored, so this file cannot be restored */
-  skipped?: "too_large" | "unreadable" | "evicted";
+  skipped?: "too_large" | "unreadable" | "evicted" | "secret";
 }
 
 /** All files first touched during one turn (one user message and its replies). */

@@ -1,5 +1,8 @@
+import { fileURLToPath } from "node:url";
+
 import type { FileCheckpoint, IDE, TurnCheckpoint } from "..";
 import { BuiltInToolNames } from "../tools/builtIn";
+import { protectedPathHit } from "../tools/permissions/protected";
 import {
   inferResolvedUriFromRelativePath,
   resolveRelativePathInDir,
@@ -76,6 +79,31 @@ export async function resolveCheckpointTargets(
   return [];
 }
 
+/** UTF-8 size. The IDE truncates reads by bytes, not by UTF-16 code units. */
+export function utf8ByteLength(content: string): number {
+  return new TextEncoder().encode(content).length;
+}
+
+/** Path form used by the secret-path check. File URIs are decoded first. */
+function pathForSecretCheck(uri: string): string {
+  if (uri.startsWith("file:")) {
+    try {
+      return fileURLToPath(uri);
+    } catch {
+      return uri;
+    }
+  }
+  return uri;
+}
+
+/**
+ * Secret files are not copied into the session JSON. Restore leaves them as
+ * they are; the snapshot only records that they existed.
+ */
+export function checkpointHoldsSecret(uri: string): boolean {
+  return protectedPathHit(pathForSecretCheck(uri), ["secret"]) !== undefined;
+}
+
 /** Capture the current state of one file. Never throws. */
 export async function snapshotFile(
   ide: IDE,
@@ -84,6 +112,9 @@ export async function snapshotFile(
   try {
     if (!(await ide.fileExists(uri))) {
       return { uri, existed: false };
+    }
+    if (checkpointHoldsSecret(uri)) {
+      return { uri, existed: true, skipped: "secret" };
     }
     let size: number | undefined;
     try {
@@ -95,7 +126,9 @@ export async function snapshotFile(
       return { uri, existed: true, skipped: "too_large" };
     }
     const content = await ide.readFile(uri);
-    if (content.length >= MAX_CHECKPOINT_FILE_BYTES) {
+    // Character length under-counts UTF-8. A file of multi-byte text can be
+    // past the byte cap the IDE truncates at while still looking small here.
+    if (utf8ByteLength(content) >= MAX_CHECKPOINT_FILE_BYTES) {
       return { uri, existed: true, skipped: "too_large" };
     }
     return { uri, existed: true, content };
@@ -205,14 +238,29 @@ export function planRestore(
   return [...earliest.values()];
 }
 
-/** Checkpoints that remain valid after restoring to the target turn. */
+/**
+ * Checkpoints that remain valid after restoring to the target turn.
+ * `keepUris` are files that failed to restore: their snapshots stay so the
+ * person can try again. Everything else from the target turn onward is dropped.
+ */
 export function pruneCheckpointsFrom(
   checkpoints: TurnCheckpoint[],
   turnOrder: string[],
   targetTurnId: string,
+  keepUris?: ReadonlySet<string>,
 ): TurnCheckpoint[] {
   const start = firstAffectedIndex(checkpoints, turnOrder, targetTurnId);
-  return start === -1 ? checkpoints : checkpoints.slice(0, start);
+  if (start === -1) {
+    return checkpoints;
+  }
+  if (!keepUris || keepUris.size === 0) {
+    return checkpoints.slice(0, start);
+  }
+  const retained = checkpoints.slice(start).flatMap((turn) => {
+    const files = turn.files.filter((file) => keepUris.has(file.uri));
+    return files.length === 0 ? [] : [{ ...turn, files }];
+  });
+  return [...checkpoints.slice(0, start), ...retained];
 }
 
 export type RestoreAction =

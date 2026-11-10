@@ -42,6 +42,15 @@ describe("ensureSecretPlaceholder", () => {
     expect(read()).toBe("AK=secret-value\n");
   });
 
+  it("tightens an existing file to owner-only", () => {
+    const file = path.join(dir, ".env");
+    fs.writeFileSync(file, "AK=secret-value\n", { mode: 0o644 });
+    ensureSecretPlaceholder(dir, "AK");
+    if (process.platform !== "win32") {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
+  });
+
   it("treats an empty or exported existing line as already listed", () => {
     fs.writeFileSync(path.join(dir, ".env"), "export AK=\n");
     ensureSecretPlaceholder(dir, "AK");

@@ -445,7 +445,37 @@ function mapUsage(usage?: ResponseUsage | null): CompletionUsage | undefined {
     total_tokens: usage.total_tokens,
   };
 
+  const cached = usage.input_tokens_details?.cached_tokens;
+  if (typeof cached === "number") {
+    mapped.prompt_tokens_details = { cached_tokens: cached };
+  }
+  const reasoning = usage.output_tokens_details?.reasoning_tokens;
+  if (typeof reasoning === "number") {
+    mapped.completion_tokens_details = { reasoning_tokens: reasoning };
+  }
+
   return mapped;
+}
+
+function responsesErrorText(
+  error:
+    | {
+        message?: string | null;
+        code?: string | null;
+      }
+    | null
+    | undefined,
+): string {
+  const message =
+    typeof error?.message === "string" ? error.message.trim() : "";
+  if (message) {
+    return message;
+  }
+  const code = typeof error?.code === "string" ? error.code.trim() : "";
+  if (code) {
+    return code;
+  }
+  return "The response failed";
 }
 
 interface ToolCallState {
@@ -703,10 +733,17 @@ export function fromResponsesChunk(
       }
       return buildChunk(state, {}, reason);
     }
-    case "response.failed":
+    case "response.failed": {
+      const failed = event as {
+        response?: {
+          error?: { message?: string | null; code?: string | null } | null;
+        };
+      };
+      throw new Error(responsesErrorText(failed.response?.error));
+    }
     case "error": {
-      state.context.pendingFinish = "content_filter";
-      return undefined;
+      const err = event as { message?: string | null; code?: string | null };
+      throw new Error(responsesErrorText(err));
     }
     default:
       return undefined;
@@ -714,6 +751,9 @@ export function fromResponsesChunk(
 }
 
 export function responseToChatCompletion(response: Response): ChatCompletion {
+  if (response.status === "failed" || response.error) {
+    throw new Error(responsesErrorText(response.error));
+  }
   const usage = mapUsage(response.usage);
   let finishReason: ChatCompletionChunk.Choice["finish_reason"] = "stop";
   if (response.incomplete_details?.reason === "max_output_tokens") {

@@ -65,6 +65,7 @@ export default function ResponseActions({
       ? turnId
       : undefined;
   });
+  const isStreaming = useAppSelector((state) => state.session.isStreaming);
   const restoreToTurn = useRestoreCheckpoint();
 
   return (
@@ -93,7 +94,7 @@ export default function ResponseActions({
         </div>
       </HeaderButtonWithToolTip>
 
-      {restorableTurnId && (
+      {restorableTurnId && !isStreaming && (
         <HeaderButtonWithToolTip
           testId={`restore-checkpoint-button-${index}`}
           text="Restore files to before this turn"

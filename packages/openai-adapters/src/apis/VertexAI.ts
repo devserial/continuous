@@ -15,7 +15,12 @@ import {
   Model,
 } from "openai/resources/index";
 import { VertexAIConfig } from "../types.js";
-import { chatChunk, chatCompletion, customFetch, embedding } from "../util.js";
+import { chatChunk, customFetch, embedding } from "../util.js";
+import {
+  anthropicResponseToChatCompletion,
+  geminiResponseToChatCompletion,
+  openAiStyleResponseToChatCompletion,
+} from "./vertexNonStream.js";
 import { AnthropicApi } from "./Anthropic.js";
 import {
   BaseLlmApi,
@@ -287,23 +292,15 @@ export class VertexAIApi implements BaseLlmApi {
       );
     }
 
-    // Convert response to OpenAI format
+    // Convert response to OpenAI format, including every text part, tool
+    // calls and usage. The first text part alone drops the rest of the reply.
     switch (vertexProvider) {
       case "anthropic":
-        return chatCompletion({
-          content: data.content?.[0]?.text || "",
-          model: body.model,
-        });
+        return anthropicResponseToChatCompletion(data, body.model);
       case "gemini":
-        return chatCompletion({
-          content: data.candidates?.[0]?.content?.parts?.[0]?.text || "",
-          model: body.model,
-        });
+        return geminiResponseToChatCompletion(data, body.model);
       case "mistral":
-        return chatCompletion({
-          content: data.choices?.[0]?.message?.content || "",
-          model: body.model,
-        });
+        return openAiStyleResponseToChatCompletion(data, body.model);
       default:
         throw new Error(`Unsupported provider: ${vertexProvider}`);
     }

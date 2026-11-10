@@ -299,7 +299,31 @@ describe("fromResponsesChunk", () => {
       prompt_tokens: 12,
       completion_tokens: 9,
       total_tokens: 21,
+      prompt_tokens_details: { cached_tokens: 0 },
+      completion_tokens_details: { reasoning_tokens: 0 },
     });
+  });
+
+  it("throws the server error instead of ending as a content filter", () => {
+    const state = createResponsesStreamState({ model: "gpt-5-preview" });
+    expect(() =>
+      fromResponsesChunk(state, {
+        type: "response.failed",
+        sequence_number: 1,
+        response: {
+          id: "resp_failed",
+          error: { message: "The model overloaded", code: "server_error" },
+        },
+      } as ResponseStreamEvent),
+    ).toThrow(/overloaded/);
+    expect(() =>
+      fromResponsesChunk(state, {
+        type: "error",
+        sequence_number: 2,
+        message: "Rate limit reached",
+        code: "rate_limit_exceeded",
+      } as ResponseStreamEvent),
+    ).toThrow(/Rate limit/);
   });
 
   it("tracks streaming tool call arguments and surfaces tool_calls deltas", () => {
@@ -482,6 +506,19 @@ describe("responseToChatCompletion", () => {
       prompt_tokens: 100,
       completion_tokens: 42,
       total_tokens: 142,
+      prompt_tokens_details: { cached_tokens: 4 },
+      completion_tokens_details: { reasoning_tokens: 10 },
     });
+  });
+
+  it("throws when the response failed", () => {
+    expect(() =>
+      responseToChatCompletion({
+        id: "resp_failed",
+        status: "failed",
+        error: { message: "The model overloaded", code: "server_error" },
+        output: [],
+      } as unknown as Response),
+    ).toThrow(/overloaded/);
   });
 });

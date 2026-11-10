@@ -1,21 +1,22 @@
 import { ChatMessage, DiffLine, IDE, ILLM, RuleWithSource } from "core";
+import { myersDiff } from "core/diff/myers";
+import { ApplyAbortManager } from "core/edit/applyAbortManager";
+import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
 import { streamDiffLines } from "core/edit/streamDiffLines";
 import { pruneLinesFromBottom, pruneLinesFromTop } from "core/llm/countTokens";
 import { getMarkdownLanguageTagForFile } from "core/util";
+import { stripImages } from "core/util/messageContent";
+import { getLastNPathParts } from "core/util/uri";
 import * as URI from "uri-js";
 import * as vscode from "vscode";
 
+import { documentChanged } from "../../apply/applyTarget";
 import { isFastApplyModel } from "../../apply/utils";
+import { editOutcomeTracker } from "../../extension/EditOutcomeTracker";
 import EditDecorationManager from "../../quickEdit/EditDecorationManager";
 import { handleLLMError } from "../../util/errorHandling";
 import { VsCodeWebviewProtocol } from "../../webviewProtocol";
 
-import { myersDiff } from "core/diff/myers";
-import { ApplyAbortManager } from "core/edit/applyAbortManager";
-import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
-import { stripImages } from "core/util/messageContent";
-import { getLastNPathParts } from "core/util/uri";
-import { editOutcomeTracker } from "../../extension/EditOutcomeTracker";
 import { VerticalDiffHandler, VerticalDiffHandlerOptions } from "./handler";
 import { getFirstChangedLine } from "./util";
 
@@ -48,17 +49,21 @@ export class VerticalDiffManager {
     startLine: number,
     endLine: number,
     options: VerticalDiffHandlerOptions,
+    editor?: vscode.TextEditor,
   ): VerticalDiffHandler | undefined {
     if (this.fileUriToHandler.has(fileUri)) {
       this.fileUriToHandler.get(fileUri)?.clear(false);
       this.fileUriToHandler.delete(fileUri);
     }
-    const editor = vscode.window.activeTextEditor;
-    if (editor && URI.equal(editor.document.uri.toString(), fileUri)) {
+    const candidate =
+      editor && URI.equal(editor.document.uri.toString(), fileUri)
+        ? editor
+        : vscode.window.activeTextEditor;
+    if (candidate && URI.equal(candidate.document.uri.toString(), fileUri)) {
       const handler = new VerticalDiffHandler(
         startLine,
         endLine,
-        editor,
+        candidate,
         this.fileUriToCodeLens,
         this.clearForfileUri.bind(this),
         this.refreshCodeLens,
@@ -125,6 +130,25 @@ export class VerticalDiffManager {
         lineDelta,
       );
     });
+  }
+
+  /** Same as clearForfileUri, but waits until the editor edits have finished. */
+  async finishDiff(fileUri: string, accept: boolean): Promise<void> {
+    const handler = this.fileUriToHandler.get(fileUri);
+    if (handler) {
+      await handler.clear(accept);
+      this.fileUriToHandler.delete(fileUri);
+    }
+    this.disableDocumentChangeListener();
+    void vscode.commands.executeCommand(
+      "setContext",
+      "continuous.diffVisible",
+      false,
+    );
+    void this.webviewProtocol.request(
+      "focusContinueInputWithoutClear",
+      undefined,
+    );
   }
 
   clearForfileUri(fileUri: string | undefined, accept: boolean) {
@@ -210,6 +234,8 @@ export class VerticalDiffManager {
     instant: boolean,
     streamId: string,
     toolCallId?: string,
+    editor?: vscode.TextEditor,
+    documentVersion?: number,
   ) {
     vscode.commands.executeCommand(
       "setContext",
@@ -217,14 +243,15 @@ export class VerticalDiffManager {
       true,
     );
 
-    // Get the current editor fileUri/range
-    let editor = vscode.window.activeTextEditor;
-    if (!editor) {
+    // Use the editor the apply resolved. Falling back to whichever tab is
+    // active now puts the diff in the wrong file after a tab switch.
+    let target = editor ?? vscode.window.activeTextEditor;
+    if (!target) {
       return;
     }
-    const fileUri = editor.document.uri.toString();
+    const fileUri = target.document.uri.toString();
     const startLine = 0;
-    const endLine = editor.document.lineCount - 1;
+    const endLine = target.document.lineCount - 1;
 
     // Check for existing handlers in the same file the new one will be created in
     const existingHandler = this.getHandlerForFile(fileUri);
@@ -235,6 +262,13 @@ export class VerticalDiffManager {
     await new Promise((resolve) => {
       setTimeout(resolve, 200);
     });
+
+    if (this.refuseStale(target, documentVersion)) {
+      return;
+    }
+    if (!editor) {
+      target = vscode.window.activeTextEditor ?? target;
+    }
 
     // Create new handler with determined start/end
     const diffHandler = this.createVerticalDiffHandler(
@@ -254,6 +288,7 @@ export class VerticalDiffManager {
           }),
         streamId,
       },
+      target,
     );
 
     if (!diffHandler) {
@@ -261,11 +296,11 @@ export class VerticalDiffManager {
       return;
     }
 
-    if (editor.selection) {
+    if (target.selection) {
       // Unselect the range
-      editor.selection = new vscode.Selection(
-        editor.selection.active,
-        editor.selection.active,
+      target.selection = new vscode.Selection(
+        target.selection.active,
+        target.selection.active,
       );
     }
 
@@ -304,6 +339,10 @@ export class VerticalDiffManager {
     newContent: string,
     streamId: string,
     toolCallId?: string,
+    editor?: vscode.TextEditor,
+    documentVersion?: number,
+    /** Path to report when the editor is an untitled stand-in for a new file. */
+    reportedFilepath?: string,
   ) {
     vscode.commands.executeCommand(
       "setContext",
@@ -311,32 +350,38 @@ export class VerticalDiffManager {
       true,
     );
 
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
+    const target = editor ?? vscode.window.activeTextEditor;
+    if (!target) {
+      return;
+    }
+    if (this.refuseStale(target, documentVersion)) {
       return;
     }
 
-    const fileUri = editor.document.uri.toString();
+    const fileUri = target.document.uri.toString();
+    const filepath = reportedFilepath ?? fileUri;
 
     const myersDiffs = myersDiff(oldContent, newContent);
 
     const diffHandler = this.createVerticalDiffHandler(
       fileUri,
       0,
-      editor.document.lineCount - 1,
+      target.document.lineCount - 1,
       {
         instant: true,
+        expectedVersion: documentVersion,
         onStatusUpdate: (status, numDiffs, fileContent) =>
           void this.webviewProtocol.request("updateApplyState", {
             streamId,
             status,
             numDiffs,
             fileContent,
-            filepath: fileUri,
+            filepath,
             toolCallId,
           }),
         streamId,
       },
+      target,
     );
 
     if (!diffHandler) {
@@ -344,11 +389,14 @@ export class VerticalDiffManager {
       return;
     }
 
-    await diffHandler.reapplyWithMyersDiff(myersDiffs);
+    const applied = await diffHandler.reapplyWithMyersDiff(myersDiffs);
+    if (!applied) {
+      return;
+    }
 
-    const scrollToLine = getFirstChangedLine(myersDiffs, 0) ?? 0;
+    const scrollToLine = getFirstChangedLine(applied, 0) ?? 0;
     const range = new vscode.Range(scrollToLine, 0, scrollToLine, 0);
-    editor.revealRange(range, vscode.TextEditorRevealType.Default);
+    target.revealRange(range, vscode.TextEditorRevealType.Default);
 
     this.enableDocumentChangeListener();
 
@@ -356,8 +404,8 @@ export class VerticalDiffManager {
       streamId,
       status: "done",
       numDiffs: this.fileUriToCodeLens.get(fileUri)?.length ?? 0,
-      fileContent: editor.document.getText(),
-      filepath: fileUri,
+      fileContent: target.document.getText(),
+      filepath,
       toolCallId,
     });
   }
@@ -372,6 +420,8 @@ export class VerticalDiffManager {
     toolCallId,
     rulesToInclude,
     isApply,
+    editor: givenEditor,
+    documentVersion,
   }: {
     input: string;
     llm: ILLM;
@@ -382,6 +432,9 @@ export class VerticalDiffManager {
     toolCallId?: string;
     rulesToInclude: undefined | RuleWithSource[];
     isApply: boolean;
+    /** The document the apply resolved. Omit to use the active editor. */
+    editor?: vscode.TextEditor;
+    documentVersion?: number;
   }): Promise<string | undefined> {
     void vscode.commands.executeCommand(
       "setContext",
@@ -389,7 +442,7 @@ export class VerticalDiffManager {
       true,
     );
 
-    let editor = vscode.window.activeTextEditor;
+    let editor = givenEditor ?? vscode.window.activeTextEditor;
 
     if (!editor) {
       return undefined;
@@ -446,6 +499,13 @@ export class VerticalDiffManager {
       setTimeout(resolve, 150);
     });
 
+    if (this.refuseStale(editor, documentVersion)) {
+      return undefined;
+    }
+    if (!givenEditor) {
+      editor = vscode.window.activeTextEditor ?? editor;
+    }
+
     // Create new handler with determined start/end
     const diffHandler = this.createVerticalDiffHandler(
       fileUri,
@@ -466,6 +526,7 @@ export class VerticalDiffManager {
           }),
         streamId,
       },
+      editor,
     );
 
     if (!diffHandler) {
@@ -636,5 +697,30 @@ export class VerticalDiffManager {
       newCodeLines,
       lineChange,
     });
+  }
+
+  /** True when the document was edited after the apply captured it. */
+  private refuseStale(
+    editor: vscode.TextEditor,
+    version: number | undefined,
+  ): boolean {
+    if (version === undefined) {
+      return false;
+    }
+    if (
+      !documentChanged(
+        { uri: editor.document.uri.toString(), version },
+        {
+          uri: editor.document.uri.toString(),
+          version: editor.document.version,
+        },
+      )
+    ) {
+      return false;
+    }
+    void vscode.window.showErrorMessage(
+      "The file changed before the edit could be applied.",
+    );
+    return true;
   }
 }

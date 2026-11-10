@@ -5,6 +5,42 @@ import * as dotenv from "dotenv";
 
 import { isValidSecretName } from "./unresolvedSecrets";
 
+/** Owner-only. A filesystem that cannot chmod (Windows) keeps the write. */
+function restrictToOwner(file: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Not supported on every file system.
+  }
+}
+
+/**
+ * Replace `.env` via a new owner-only file. `mode` on writeFile only applies
+ * when the path is created, so an existing 0644 file would stay readable by
+ * the group. The secret is written to the temporary file after it is already
+ * owner-only, then renamed into place.
+ */
+function writePrivateEnvFile(file: string, contents: string): void {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(file)) {
+    restrictToOwner(file);
+  }
+  const tmp = path.join(
+    dir,
+    `.env.${process.pid}.${Date.now().toString(36)}.tmp`,
+  );
+  try {
+    fs.writeFileSync(tmp, contents, { mode: 0o600 });
+    restrictToOwner(tmp);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
+  restrictToOwner(file);
+}
+
 /**
  * Make sure `<dir>/.env` exists and has a `NAME=` line for the secret, so the
  * user can open the file and just type the value. An existing value is never
@@ -24,9 +60,9 @@ export function ensureSecretPlaceholder(dir: string, name: string): string {
 
   if (!alreadyListed) {
     const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
-    fs.writeFileSync(file, `${existing}${separator}${name}=\n`, {
-      mode: 0o600,
-    });
+    writePrivateEnvFile(file, `${existing}${separator}${name}=\n`);
+  } else if (fs.existsSync(file)) {
+    restrictToOwner(file);
   }
 
   return file;
@@ -76,13 +112,7 @@ export function setSecretInEnvFile(
   if (index >= 0) lines[index] = line;
   else lines.push(line);
 
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, lines.join(eol) + eol, { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // Not supported on every file system (Windows); the write above succeeded.
-  }
+  writePrivateEnvFile(file, lines.join(eol) + eol);
   return file;
 }
 
@@ -143,6 +173,6 @@ export function removeSecretFromEnvFile(dir: string, name: string): boolean {
       `Could not remove ${name} from .env without changing other lines; edit the file by hand`,
     );
   }
-  fs.writeFileSync(file, next, { mode: 0o600 });
+  writePrivateEnvFile(file, next);
   return true;
 }

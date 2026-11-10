@@ -117,6 +117,30 @@ export class GeminiApi implements BaseLlmApi {
     }
   }
 
+  private _messageText(
+    content:
+      | string
+      | OpenAI.Chat.Completions.ChatCompletionContentPart[]
+      | OpenAI.Chat.Completions.ChatCompletionContentPartRefusal[]
+      | null
+      | undefined,
+  ): string {
+    if (typeof content === "string") {
+      return content;
+    }
+    if (!Array.isArray(content)) {
+      return "";
+    }
+    return content
+      .map((part) => {
+        if (part.type === "text") return part.text;
+        if (part.type === "refusal") return part.refusal;
+        return "";
+      })
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+
   public _convertBody(
     oaiBody: ChatCompletionCreateParams,
     isV1API: boolean,
@@ -152,8 +176,8 @@ export class GeminiApi implements BaseLlmApi {
 
     const contents = oaiBody.messages
       .map((msg) => {
-        if (msg.role === "system" && !isV1API) {
-          return null; // Don't include system message in contents
+        if ((msg.role === "system" || msg.role === "developer") && !isV1API) {
+          return null; // Collected into systemInstruction below
         }
 
         if (msg.role === "assistant" && msg.tool_calls?.length) {
@@ -164,10 +188,20 @@ export class GeminiApi implements BaseLlmApi {
             }
           }
 
+          const textParts: GeminiChatContentPart[] = [];
+          if (typeof msg.content === "string" && msg.content) {
+            textParts.push({ text: msg.content });
+          } else if (Array.isArray(msg.content)) {
+            textParts.push(
+              ...msg.content.map((part) => this._oaiPartToGeminiPart(part)),
+            );
+          }
+
           return {
             role: "model" as const,
-            parts: (msg.tool_calls as GeminiToolCall[]).map(
-              (toolCall, index) => {
+            parts: [
+              ...textParts,
+              ...(msg.tool_calls as GeminiToolCall[]).map((toolCall, index) => {
                 if (toolCall.type === "function" && "function" in toolCall) {
                   let thoughtSignature: string | undefined;
                   if (index === 0) {
@@ -201,13 +235,24 @@ export class GeminiApi implements BaseLlmApi {
                 throw new Error(
                   `Unsupported tool call type in Gemini: ${toolCall.type}`,
                 );
-              },
-            ),
+              }),
+            ],
           };
         }
 
         if (msg.role === "tool") {
           const functionName = toolCallIdToNameMap.get(msg.tool_call_id);
+          const imageParts: GeminiChatContentPart[] = Array.isArray(msg.content)
+            ? msg.content
+                .filter(
+                  (part) => (part as { type?: string }).type === "image_url",
+                )
+                .map((part) =>
+                  this._oaiPartToGeminiPart(
+                    part as OpenAI.Chat.Completions.ChatCompletionContentPart,
+                  ),
+                )
+            : [];
           return {
             role: "user" as const,
             parts: [
@@ -216,13 +261,11 @@ export class GeminiApi implements BaseLlmApi {
                   id: includeToolCallIds ? msg.tool_call_id : undefined,
                   name: functionName ?? "unknown",
                   response: {
-                    content:
-                      typeof msg.content === "string"
-                        ? msg.content
-                        : msg.content.map((part) => part.text).join(""),
+                    content: this._messageText(msg.content),
                   },
                 },
               },
+              ...imageParts,
             ],
           };
         }
@@ -244,14 +287,18 @@ export class GeminiApi implements BaseLlmApi {
 
     const mergedContents = mergeConsecutiveGeminiMessages(contents);
 
-    const sysMsg = oaiBody.messages.find((msg) => msg.role === "system");
+    const systemText = oaiBody.messages
+      .filter((msg) => msg.role === "system" || msg.role === "developer")
+      .map((msg) => this._messageText(msg.content))
+      .filter((text) => text.length > 0)
+      .join("\n\n");
     const finalBody: any = {
       generationConfig,
       contents: mergedContents,
-      // if there is a system message, reformat it for Gemini API
-      ...(sysMsg &&
+      // Every system and developer message, not only the first system string.
+      ...(systemText &&
         !isV1API && {
-          systemInstruction: { parts: [{ text: sysMsg.content }] },
+          systemInstruction: { parts: [{ text: systemText }] },
         }),
     };
 

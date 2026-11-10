@@ -64,6 +64,35 @@ function copiedFromLegacyDir(legacyDir: string, source: string): boolean {
  * config, for one). Point those in the old folder at the same file in the new
  * one, so the choices still match.
  */
+/**
+ * Replace `from` with `to` only when it is the whole path: the next character
+ * is a separator, a closing quote, or the end of the string. A longer name
+ * that merely starts the same way (`.continue-work`) is left alone.
+ */
+export function replacePathPrefix(
+  text: string,
+  from: string,
+  to: string,
+): string {
+  if (!from) return text;
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const at = text.indexOf(from, i);
+    if (at === -1) {
+      out += text.slice(i);
+      break;
+    }
+    const next = text[at + from.length];
+    const boundary =
+      next === undefined || next === "/" || next === "\\" || next === '"';
+    out += text.slice(i, at);
+    out += boundary ? to : from;
+    i = at + from.length;
+  }
+  return out;
+}
+
 function repointGlobalContext(file: string, legacyDir: string, dir: string) {
   if (!fs.existsSync(file)) return;
   const forms = (p: string) => {
@@ -83,9 +112,25 @@ function repointGlobalContext(file: string, legacyDir: string, dir: string) {
   const to = forms(dir);
   let text = fs.readFileSync(file, "utf8");
   from.forEach((f, i) => {
-    text = text.split(f).join(to[i]);
+    text = replacePathPrefix(text, f, to[i]);
   });
   fs.writeFileSync(file, text);
+}
+
+/** Drop leftover `~/.continuous.partial-<pid>` folders from a copy that crashed. */
+function removeStalePartialCopies(dir: string) {
+  const parent = path.dirname(dir);
+  const prefix = `${path.basename(dir)}.partial-`;
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+  }
 }
 
 /**
@@ -95,11 +140,15 @@ function repointGlobalContext(file: string, legacyDir: string, dir: string) {
  * Continue extension and its CLI keep using it. Returns the folder to use.
  */
 export function migrateLegacyGlobalDir(legacyDir: string, dir: string): string {
+  removeStalePartialCopies(dir);
   if (fs.existsSync(dir) || !fs.existsSync(legacyDir)) return dir;
   const partial = `${dir}.partial-${process.pid}`;
   try {
     fs.cpSync(legacyDir, partial, {
       recursive: true,
+      // Copy the file a symlink points at. Leaving the link would keep
+      // config and secrets pointing at the old folder.
+      dereference: true,
       filter: (source) => copiedFromLegacyDir(legacyDir, source),
     });
     repointGlobalContext(

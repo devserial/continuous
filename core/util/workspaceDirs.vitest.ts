@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateLegacyGlobalDir } from "./paths";
+import { migrateLegacyGlobalDir, replacePathPrefix } from "./paths";
 import {
   isIgnoreFile,
   isInWorkspaceConfigDir,
@@ -120,6 +120,77 @@ describe("migrateLegacyGlobalDir", () => {
     fs.writeFileSync(path.join(legacy, "config.yaml"), "old");
     expect(migrateLegacyGlobalDir(legacy, dir)).toBe(dir);
     expect(fs.existsSync(path.join(dir, "config.yaml"))).toBe(false);
+  });
+
+  it("copies the file a symlink points at", () => {
+    const home = tmp();
+    const legacy = path.join(home, ".continue");
+    const dir = path.join(home, ".continuous");
+    const outside = path.join(home, "real-config.yaml");
+    fs.mkdirSync(legacy);
+    fs.writeFileSync(outside, "name: real\n");
+    fs.symlinkSync(outside, path.join(legacy, "config.yaml"));
+
+    expect(migrateLegacyGlobalDir(legacy, dir)).toBe(dir);
+
+    const copied = path.join(dir, "config.yaml");
+    expect(fs.lstatSync(copied).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(copied, "utf8")).toBe("name: real\n");
+    expect(fs.readFileSync(outside, "utf8")).toBe("name: real\n");
+  });
+
+  it("does not rewrite a path that only shares the folder prefix", () => {
+    const home = tmp();
+    const legacy = path.join(home, ".continue");
+    const dir = path.join(home, ".continuous");
+    const sibling = `${legacy}-work`;
+    fs.mkdirSync(path.join(legacy, "index"), { recursive: true });
+    fs.writeFileSync(
+      path.join(legacy, "index", "globalContext.json"),
+      JSON.stringify({
+        selected: path.join(legacy, "config.yaml"),
+        other: path.join(sibling, "x"),
+      }),
+    );
+
+    migrateLegacyGlobalDir(legacy, dir);
+
+    const context = JSON.parse(
+      fs.readFileSync(path.join(dir, "index", "globalContext.json"), "utf8"),
+    );
+    expect(context.selected).toBe(path.join(dir, "config.yaml"));
+    expect(context.other).toBe(path.join(sibling, "x"));
+  });
+
+  it("removes a leftover partial copy before copying again", () => {
+    const home = tmp();
+    const legacy = path.join(home, ".continue");
+    const dir = path.join(home, ".continuous");
+    const partial = `${dir}.partial-999`;
+    fs.mkdirSync(legacy);
+    fs.writeFileSync(path.join(legacy, "config.yaml"), "name: mine\n");
+    fs.mkdirSync(partial);
+    fs.writeFileSync(path.join(partial, ".env"), "SECRET=1\n");
+
+    expect(migrateLegacyGlobalDir(legacy, dir)).toBe(dir);
+
+    expect(fs.existsSync(partial)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, "config.yaml"), "utf8")).toBe(
+      "name: mine\n",
+    );
+    expect(
+      fs.readdirSync(home).some((name) => name.includes(".partial-")),
+    ).toBe(false);
+  });
+
+  it("replaces a path prefix only on a boundary", () => {
+    const from = "/home/u/.continue";
+    const to = "/home/u/.continuous";
+    expect(
+      replacePathPrefix(`${from}/config.yaml and ${from}-work/x`, from, to),
+    ).toBe(`${to}/config.yaml and ${from}-work/x`);
+    expect(replacePathPrefix(`${from}"`, from, to)).toBe(`${to}"`);
+    expect(replacePathPrefix(from, from, to)).toBe(to);
   });
 
   it("uses the new folder when there is nothing to copy", () => {

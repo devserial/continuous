@@ -132,5 +132,97 @@ describe("GeminiApi", () => {
       expect(result.contents[1].role).toBe("model");
       expect(result.contents[2].role).toBe("user");
     });
+
+    it("keeps assistant text that was sent with a tool call", () => {
+      const result = api._convertBody(
+        {
+          model: "gemini-2.5-flash",
+          messages: [
+            { role: "user", content: "Use the tool" },
+            {
+              role: "assistant",
+              content: "I will look it up.",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function" as const,
+                  function: { name: "tool_a", arguments: "{}" },
+                },
+              ],
+            },
+          ],
+        },
+        false,
+        true,
+      );
+      expect(result.contents[1].parts[0]).toEqual({
+        text: "I will look it up.",
+      });
+      expect(result.contents[1].parts[1]).toHaveProperty("functionCall");
+    });
+
+    it("keeps an image from a tool result", () => {
+      const result = api._convertBody(
+        {
+          model: "gemini-2.5-flash",
+          messages: [
+            { role: "user", content: "Look" },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function" as const,
+                  function: { name: "shot", arguments: "{}" },
+                },
+              ],
+            },
+            {
+              role: "tool" as const,
+              tool_call_id: "call_1",
+              content: [
+                { type: "text", text: "see" },
+                {
+                  type: "image_url",
+                  image_url: { url: "data:image/png;base64,aGVsbG8=" },
+                },
+              ] as any,
+            },
+          ],
+        },
+        false,
+        true,
+      );
+      const parts = result.contents[2].parts;
+      expect(parts[0].functionResponse.response.content).toBe("see");
+      expect(parts[1]).toMatchObject({
+        inlineData: { data: "aGVsbG8=" },
+      });
+    });
+
+    it("joins every system and developer message into the system instruction", () => {
+      const result = api._convertBody(
+        {
+          model: "gemini-2.5-flash",
+          messages: [
+            { role: "system", content: "Be brief." },
+            {
+              role: "system",
+              content: [{ type: "text", text: "Use tests." }],
+            },
+            { role: "developer", content: "Prefer small diffs." },
+            { role: "user", content: "Hi" },
+          ],
+        },
+        false,
+        true,
+      );
+      expect(result.systemInstruction.parts[0].text).toBe(
+        "Be brief.\n\nUse tests.\n\nPrefer small diffs.",
+      );
+      expect(result.contents).toHaveLength(1);
+      expect(result.contents[0].role).toBe("user");
+    });
   });
 });

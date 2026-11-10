@@ -1,7 +1,12 @@
 import { Core } from "core/core";
 import { DataLogger } from "core/data/log";
 import { myersDiff } from "core/diff/myers";
+import * as vscode from "vscode";
 
+import {
+  forgetPendingNewFile,
+  pendingEditorForFilepath,
+} from "../apply/pendingNewFile";
 import { ContinueGUIWebviewViewProvider } from "../ContinueGUIWebviewViewProvider";
 import { editOutcomeTracker } from "../extension/EditOutcomeTracker";
 import { VsCodeIde } from "../VsCodeIde";
@@ -30,7 +35,58 @@ export async function processDiff(
     return;
   }
 
-  await ide.openFile(newOrCurrentUri);
+  const pendingEditor = pendingEditorForFilepath(newOrCurrentUri);
+  if (pendingEditor) {
+    if (!streamId) {
+      streamId = verticalDiffManager.getStreamIdForFile(pendingEditor);
+    }
+    const doc = vscode.workspace.textDocuments.find(
+      (open) => open.uri.toString() === pendingEditor,
+    );
+    await verticalDiffManager.finishDiff(pendingEditor, action === "accept");
+    forgetPendingNewFile(newOrCurrentUri);
+    if (action !== "accept") {
+      if (doc) {
+        await vscode.window.showTextDocument(doc, {
+          preview: false,
+          preserveFocus: false,
+        });
+        await vscode.commands.executeCommand(
+          "workbench.action.revertAndCloseActiveEditor",
+        );
+      }
+      core.invoke("cancelApply", undefined);
+      if (streamId) {
+        await sidebar.webviewProtocol.request("updateApplyState", {
+          fileContent: "",
+          filepath: newOrCurrentUri,
+          streamId,
+          status: "closed",
+          numDiffs: 0,
+          toolCallId,
+        });
+      }
+      return;
+    }
+    if (!doc) {
+      void vscode.window.showErrorMessage(
+        "The new file was closed before it could be saved.",
+      );
+      return;
+    }
+    const content = doc.getText();
+    await ide.writeFile(newOrCurrentUri, content);
+    await vscode.window.showTextDocument(doc, {
+      preview: false,
+      preserveFocus: false,
+    });
+    await vscode.commands.executeCommand(
+      "workbench.action.revertAndCloseActiveEditor",
+    );
+    await ide.openFile(newOrCurrentUri);
+  } else {
+    await ide.openFile(newOrCurrentUri);
+  }
 
   // If streamId is not provided, try to get it from the VerticalDiffManager
   if (!streamId) {

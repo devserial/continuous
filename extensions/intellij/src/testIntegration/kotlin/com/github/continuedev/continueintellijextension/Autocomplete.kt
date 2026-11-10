@@ -26,6 +26,9 @@ class Autocomplete {
                 button("Create").click()
             }
             ideFrame {
+                // First launch opens the tutorial in another editor and can
+                // move the selection while the tab click is in flight.
+                wait(3.seconds)
                 editorTabs {
                     clickTab("Main.java")
                 }
@@ -38,7 +41,11 @@ class Autocomplete {
                     keyboard {
                         tab()
                     }
-                    assertTrue(text.contains("TEST_LLM_RESPONSE_0"))
+                    wait(5.seconds)
+                    assertTrue(
+                        text.contains("TEST_LLM_RESPONSE_0"),
+                        "Editor text did not contain the test completion: $text",
+                    )
                 }
             }
         }

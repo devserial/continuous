@@ -30,6 +30,16 @@ describe("setSecretInEnvFile", () => {
     }
   });
 
+  it("tightens an existing world-readable file before the new value is in it", () => {
+    const file = path.join(dir, ".env");
+    fs.writeFileSync(file, "A=1\n", { mode: 0o644 });
+    setSecretInEnvFile(dir, "B", "secret-value");
+    expect(read()).toBe("A=1\nB=secret-value\n");
+    if (process.platform !== "win32") {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
+  });
+
   it("replaces an existing line and keeps the others", () => {
     fs.writeFileSync(
       path.join(dir, ".env"),

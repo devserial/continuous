@@ -76,6 +76,9 @@ export function useRestoreCheckpoint() {
   }
 
   return async function restoreToTurn(turnId: string) {
+    if (store.getState().session.isStreaming) {
+      return;
+    }
     const ide = ideMessenger.ide;
     const { checkpoints, history } = store.getState().session;
     const turnOrder = getTurnOrder(history);
@@ -99,9 +102,35 @@ export function useRestoreCheckpoint() {
       text: `Files will be put back to how they were before this turn. Later changes to them are lost. Changes made by terminal commands are not tracked.\n\n${describeRestoreItems(items, workspaceDirs)}`,
       confirmText: "Restore",
       onConfirm: async () => {
-        const result = await applyRestore(ide, items);
+        // The dialog can stay open while the agent or the person keeps
+        // editing. Read the session again and rebuild the plan, instead of
+        // applying the list captured when the dialog opened.
+        const fresh = store.getState().session;
+        if (fresh.isStreaming) {
+          showDialog({
+            title: "Restore files",
+            text: "A reply is still streaming. Restore again when it finishes.",
+            hideCancelButton: true,
+            confirmText: "OK",
+            onConfirm: () => {},
+          });
+          return;
+        }
+        const freshOrder = getTurnOrder(fresh.history);
+        const freshItems = await previewRestore(
+          ide,
+          planRestore(fresh.checkpoints, freshOrder, turnId),
+        );
+        const result = await applyRestore(ide, freshItems);
         dispatch(
-          setCheckpoints(pruneCheckpointsFrom(checkpoints, turnOrder, turnId)),
+          setCheckpoints(
+            pruneCheckpointsFrom(
+              fresh.checkpoints,
+              freshOrder,
+              turnId,
+              new Set(result.failed.map((f) => f.uri)),
+            ),
+          ),
         );
         if (result.failed.length) {
           showDialog({

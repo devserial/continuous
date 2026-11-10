@@ -24,6 +24,7 @@ import {
 } from "./types";
 
 import type * as LanceType from "vectordb";
+import { lanceDeleteFilter, lancePathPrefixFilter } from "./lanceFilter";
 import { tagToString } from "./utils";
 
 interface LanceDbRow {
@@ -363,9 +364,7 @@ export class LanceDbIndex implements CodebaseIndex {
       }
 
       for (const { path, cacheKey } of toDel) {
-        await lanceTable.delete(
-          `cachekey = '${cacheKey}' AND path = '${path}'`,
-        );
+        await lanceTable.delete(lanceDeleteFilter(cacheKey, path));
 
         accumulatedProgress += 1 / toDel.length / 3;
         yield {
@@ -419,7 +418,7 @@ export class LanceDbIndex implements CodebaseIndex {
     const table = await db.openTable(tableName);
     let query = table.search(vector);
     if (directory) {
-      query = query.where(`path LIKE '${directory}%'`).limit(300);
+      query = query.where(lancePathPrefixFilter(directory)).limit(300);
     } else {
       query = query.limit(n);
     }
