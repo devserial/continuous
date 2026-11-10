@@ -2,6 +2,8 @@
 
 GitHub Actions that provide automated code reviews for pull requests using Continue CLI.
 
+**Not for untrusted pull requests.** The action refuses a pull request whose author does not have write access, including when someone with write access comments `@continue-review` on a pull request opened by someone who cannot push. Do not remove that check. The headless agent can still use tools other than Bash, and the workflow can hold repository credentials. Pin the action to a commit SHA. Do not use a branch such as `@main`.
+
 ## Available Actions
 
 This repository provides a GitHub Action for automated PR reviews:
@@ -10,7 +12,7 @@ This repository provides a GitHub Action for automated PR reviews:
 
 Provides high-level PR assessment with overall feedback and recommendations.
 
-- **Path:** `continuedev/continue/actions/general-review@main`
+- **Path:** `<owner>/<repo>/actions/general-review@<commit SHA>`
 - **Trigger:** `@continue-review`
 - **Output:** Summary comment with strengths, issues, and recommendations
 
@@ -36,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: continuedev/continue/actions/general-review@main
+      - uses: <owner>/<repo>/actions/general-review@<40-character SHA>
         with:
           continue-api-key: ${{ secrets.CONTINUE_API_KEY }}
           continue-org: "your-org-name"
@@ -87,12 +89,12 @@ The action can be triggered in two ways:
 
 ### Automatic Triggers
 
-- When a PR is opened by a team member (OWNER, MEMBER, or COLLABORATOR)
-- When a PR is marked as "ready for review" by a team member
+- When a PR is opened by someone with write access (OWNER, MEMBER, or COLLABORATOR)
+- When a PR is marked as "ready for review" by someone with write access
 
 ### Manual Triggers
 
-Team members can trigger reviews by commenting on any pull request:
+Someone with write access can request a review by commenting on a pull request whose author also has write access:
 
 - `@continue-review` - Triggers a review
 
@@ -115,21 +117,19 @@ The general review provides a structured comment that includes:
 
 ## Versioning
 
-We recommend using the main branch:
-
-- `@main` - Uses the latest code from the main branch
+Pin the action to a commit SHA. A branch name moves, so do not use `@main`.
 
 Example:
 
 ```yaml
-uses: continuedev/continue/actions/general-review@main
+uses: <owner>/<repo>/actions/general-review@<40-character SHA>
 ```
 
 ## Troubleshooting
 
 ### Review not triggering
 
-- Ensure the PR author or commenter has appropriate permissions (OWNER, MEMBER, or COLLABORATOR)
+- The pull request author must have write access. On a comment, the commenter must have write access as well. A comment from a maintainer does not make an untrusted pull request safe to review.
 - Check that the workflow file is in the default branch
 - Verify the Continue API key is correctly set as a repository secret
 

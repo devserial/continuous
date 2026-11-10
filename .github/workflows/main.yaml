@@ -23,6 +23,9 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 # onnxruntime-node's postinstall fetches its CUDA libraries from GitHub releases on Linux. Packaging drops them and nothing here uses a GPU, so don't let that download fail the job.
 env:
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip
@@ -255,7 +258,7 @@ jobs:
           echo "name=Continuous $version" >> "$GITHUB_OUTPUT"
 
       - name: Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ steps.notes.outputs.tag }}
           # A new tag is created at the commit that was built.
@@ -292,6 +295,16 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Check republish run
+        if: inputs.republish_run_id != ''
+        env:
+          REPUBLISH_RUN_ID: ${{ inputs.republish_run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/ci/republish-run.js
+
       - uses: actions/download-artifact@v8
         if: inputs.republish_run_id == ''
         with:
@@ -316,13 +329,15 @@ jobs:
           # skipped, so a re-run only adds the missing ones.
           for f in vsix-artifacts/*.vsix; do npx --yes @vscode/vsce@4.1.0 publish --oidc --skip-duplicate --packagePath "$f"; done
 
-  # Open VSX has no trusted publishing, so it keeps its token; skipped when the
-  # secret is not set.
+  # Open VSX has no trusted publishing, so it keeps a token. The token is a
+  # secret on the marketplace environment, and the job waits for that
+  # environment's approval. Skipped when the secret is not set.
   publish-openvsx:
     runs-on: ubuntu-latest
     needs:
       - build
-    if: (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_build == 'true') && inputs.republish_run_id == ''
+    if: (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_build == 'true') && inputs.republish_run_id == '' && github.repository == 'b1tninja/continuous'
+    environment: marketplace
     permissions:
       contents: read
     env:
@@ -337,6 +352,5 @@ jobs:
 
       - name: Publish to Open VSX Registry
         if: env.OVSX_PAT != ''
-        continue-on-error: true
         run: |
           for f in vsix-artifacts/*.vsix; do npx --yes ovsx@1.3.0 publish --packagePath "$f"; done

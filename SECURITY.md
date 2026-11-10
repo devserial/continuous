@@ -1,16 +1,15 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Supported versions
 
-If you discover a security vulnerability, please do not open a public issue. Instead, please report it by emailing security@continue.dev. We will be highly responsive to all security concerns and ask that you give us sufficient time to investigate and address the vulnerability before disclosing it publicly.
+Security fixes are considered for the latest release and for the `main` branch. Older releases are not maintained.
 
-Please include the following details in your report:
+## Reporting a vulnerability
 
-- A description of the vulnerability
-- Steps to reproduce the issue
-- Your assessment of the potential impact
-- Any possible mitigations
+Continuous is an unofficial fork. It is not maintained by Continue Dev, Inc. Do not send a report about this fork to that project.
 
-## Contact
+Report a vulnerability privately to this fork's maintainer with GitHub private vulnerability reporting:
 
-For any other questions or concerns related to security, please contact us at security@continue.dev.
+[Report a vulnerability](https://github.com/b1tninja/continuous/security/advisories/new)
+
+Do not open a public issue for a security report. Include what is affected, how you reproduced it, and the impact. Please allow time to investigate before writing about it publicly.

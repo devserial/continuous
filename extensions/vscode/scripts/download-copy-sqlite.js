@@ -6,11 +6,15 @@ const { ProxyAgent } = require("undici");
 const { rimrafSync } = require("rimraf");
 
 const { execCmdSync } = require("../../../scripts/util");
+const {
+  SQLITE_VERSION,
+  assertDownloadSha256,
+  esbuildDownloadUrl,
+  sqliteDownloadUrl,
+} = require("./download-integrity");
 
 // GitHub's 504 bursts have outlasted four attempts (2s + 4s + 8s); six give about a minute.
 const FETCH_ATTEMPTS = 6;
-
-const SQLITE_VERSION = "v5.1.7";
 
 /** fetch, trying again after a server error or a dropped connection. */
 async function fetchWithRetry(url, options) {
@@ -57,9 +61,10 @@ async function downloadFile(url, outputPath) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // Get the response as an array buffer and write it to the file
-  const buffer = await response.arrayBuffer();
-  fs.writeFileSync(outputPath, Buffer.from(buffer));
+  // Check the pin before anything is written or unpacked.
+  const buffer = Buffer.from(await response.arrayBuffer());
+  assertDownloadSha256(url, buffer);
+  fs.writeFileSync(outputPath, buffer);
 }
 
 /**
@@ -68,14 +73,7 @@ async function downloadFile(url, outputPath) {
  * @param {string} targetDir the directory to download into
  */
 async function downloadSqlite(target, targetDir) {
-  const downloadUrl =
-    // node-sqlite3 doesn't have a pre-built binary for win32-arm64
-    target === "win32-arm64"
-      ? "https://continue-server-binaries.s3.us-west-1.amazonaws.com/win32-arm64/node_sqlite3.tar.gz"
-      : `https://github.com/TryGhost/node-sqlite3/releases/download/${SQLITE_VERSION}/sqlite3-${SQLITE_VERSION}-napi-v6-${
-          target
-        }.tar.gz`;
-  await downloadFile(downloadUrl, targetDir);
+  await downloadFile(sqliteDownloadUrl(target), targetDir);
 }
 
 async function installAndCopySqlite(target) {
@@ -103,7 +101,7 @@ async function installAndCopyEsbuild(target) {
   rimrafSync("node_modules/@esbuild");
   fs.mkdirSync("node_modules/@esbuild", { recursive: true });
   await downloadFile(
-    `https://continue-server-binaries.s3.us-west-1.amazonaws.com/${target}/esbuild.zip`,
+    esbuildDownloadUrl(target),
     "node_modules/@esbuild/esbuild.zip",
   );
   execCmdSync("cd node_modules/@esbuild && unzip esbuild.zip");

@@ -91,22 +91,17 @@ This file should be created the first time that the CLI starts.
 
 ## Headless mode permissions
 
-When running in headless mode (using the `-p` or `--print` flag), the CLI uses the same default policies as normal mode, but with different behavior for tools that require confirmation:
+Headless mode (`-p` or `--print`) does not use the same defaults as the TUI.
 
-- **Normal mode**: Write operations and terminal commands require confirmation (`ask`) - user is prompted
-- **Headless mode**: Same default policies, but tools requiring confirmation (`ask`) will cause the process to exit with an error message
+- **TUI**: Bash, and any tool without its own entry, asks. Edit, MultiEdit and Write ask.
+- **Headless**: Bash, and any tool without its own entry, is allowed and runs with no prompt. Edit, MultiEdit and Write still ask. With nobody to answer, a headless run stops instead of running a tool that asks.
 
-To use tools that normally require confirmation in headless mode, you must explicitly allow them:
+`--allow` grants a tool whose default is ask. `--exclude` drops a tool the headless defaults would allow.
 
 ```bash
-# Headless mode with explicit permissions for write operations
-cn -p --allow write_file "Write a hello world script"
+# Let a headless run use Write, which asks by default
+cn -p --allow Write "Write a hello world script"
 
-# Headless mode with wildcard permission (allow all tools)
-cn -p --allow "*" "Write and run a script"
-
-# Headless mode with specific restrictions
-cn -p --exclude run_terminal_command "Clean up the codebase"
+# Drop Bash, which headless mode allows by default
+cn -p --exclude Bash "Summarize this repository"
 ```
-
-This approach ensures that headless mode is secure by default while providing clear guidance on how to enable the needed permissions.

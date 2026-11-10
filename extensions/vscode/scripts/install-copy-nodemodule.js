@@ -4,23 +4,21 @@
 
 const { fork } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const ncp = require("./copy-dir").ncp;
 const { rimrafSync } = require("rimraf");
 
-const { execCmdSync } = require("../../../scripts/util");
+const { installPinnedLancedb } = require("./pinned-lancedb");
 
 async function installNodeModuleInTempDirAndCopyToCurrent(packageName, toCopy) {
   console.log(`Copying ${packageName} to ${toCopy}`);
   // This is a way to install only one package without npm trying to install all the dependencies
   // Create a temporary directory for installing the package
-  const adjustedName = packageName.replace(/@/g, "").replace("/", "-");
   const currentDir = process.cwd();
-  const tempDir = path.join(
-    currentDir,
-    "tmp",
-    `continue-node_modules-${adjustedName}`,
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "continuous-node-modules-"),
   );
 
   // // Remove the dir we will be copying to
@@ -33,8 +31,9 @@ async function installNodeModuleInTempDirAndCopyToCurrent(packageName, toCopy) {
     // Move to the temporary directory
     process.chdir(tempDir);
 
-    // Initialize a new package.json and install the package
-    execCmdSync(`npm init -y && npm i -f ${packageName} --no-save`);
+    // Pack the pinned version and install that tarball. `npm i -f <name>` with no
+    // version would take whatever the registry currently calls latest.
+    installPinnedLancedb(packageName, tempDir);
 
     console.log(
       `Contents of: ${packageName}`,

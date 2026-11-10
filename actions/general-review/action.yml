@@ -1,6 +1,6 @@
 name: "Continue PR Review"
-description: "Automated code review for pull requests using Continue CLI"
-author: "Continue Dev, Inc."
+description: "Reviews a pull request. Refuses a pull request whose author lacks write access. Not safe for untrusted pull requests: do not remove that check. A headless run can use tools, and this job can hold repository credentials."
+author: "b1tninja"
 
 inputs:
   continue-api-key:
@@ -22,87 +22,66 @@ runs:
     - name: Check Authorization
       id: auth-check
       uses: actions/github-script@v7
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
-          let shouldRun = false;
-          let skipReason = '';
+          const path = require("path");
+          const { decideReview } = require(path.join(process.env.ACTION_PATH, "scripts", "decideReview.js"));
 
-          if (context.eventName === 'pull_request') {
-            // Check if PR is a draft
-            if (context.payload.pull_request.draft) {
-              skipReason = 'PR is a draft';
-            } else {
-              // Check if user has write permission (includes admin, maintain, write)
-              const prAuthor = context.payload.pull_request.user.login;
-              try {
-                const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  username: prAuthor
-                });
-                
-                const allowedPermissions = ['admin', 'maintain', 'write'];
-                if (allowedPermissions.includes(permission.permission)) {
-                  shouldRun = true;
-                  console.log(`PR author @${prAuthor} has ${permission.permission} permission`);
-                } else {
-                  skipReason = `PR author @${prAuthor} does not have write permission (has: ${permission.permission})`;
-                }
-              } catch (error) {
-                // If API call fails, fall back to checking author_association
-                const association = context.payload.pull_request.author_association;
-                const allowedAssociations = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-                if (allowedAssociations.includes(association)) {
-                  shouldRun = true;
-                  console.log(`PR author @${prAuthor} association: ${association}`);
-                } else {
-                  skipReason = `PR author @${prAuthor} is not a team member (association: ${association})`;
-                }
-              }
+          const allowedAssociations = ["OWNER", "MEMBER", "COLLABORATOR"];
+          async function permissionFor(username, association) {
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username,
+              });
+              return data.permission;
+            } catch (error) {
+              return allowedAssociations.includes(association) ? "write" : "read";
             }
-          } else if (context.eventName === 'issue_comment') {
-            // Check if it's a PR comment with the trigger phrase
-            const hasTrigger = context.payload.comment.body.includes('@continue-review');
-            if (context.payload.issue.pull_request && hasTrigger) {
-              const commenter = context.payload.comment.user.login;
-              try {
-                const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  username: commenter
-                });
-                
-                const allowedPermissions = ['admin', 'maintain', 'write'];
-                if (allowedPermissions.includes(permission.permission)) {
-                  shouldRun = true;
-                  console.log(`Commenter @${commenter} has ${permission.permission} permission`);
-                } else {
-                  skipReason = `Commenter @${commenter} does not have write permission (has: ${permission.permission})`;
-                }
-              } catch (error) {
-                // If API call fails, fall back to checking author_association
-                const association = context.payload.comment.author_association;
-                const allowedAssociations = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-                if (allowedAssociations.includes(association)) {
-                  shouldRun = true;
-                  console.log(`Commenter @${commenter} association: ${association}`);
-                } else {
-                  skipReason = `Commenter @${commenter} is not a team member (association: ${association})`;
-                }
-              }
-            } else {
-              skipReason = 'Comment does not contain @continue-review trigger, or is not on a PR';
+          }
+
+          let decision;
+          if (context.eventName === "pull_request") {
+            const pr = context.payload.pull_request;
+            decision = decideReview({
+              eventName: "pull_request",
+              isDraft: Boolean(pr.draft),
+              prAuthorPermission: await permissionFor(pr.user.login, pr.author_association),
+            });
+          } else if (context.eventName === "issue_comment") {
+            const isPr = Boolean(context.payload.issue.pull_request);
+            const body = context.payload.comment.body || "";
+            let prAuthorPermission = "read";
+            if (isPr && body.includes("@continue-review")) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              prAuthorPermission = await permissionFor(pr.user.login, pr.author_association);
             }
+            decision = decideReview({
+              eventName: "issue_comment",
+              isPullRequestIssue: isPr,
+              commentBody: body,
+              commenterPermission: await permissionFor(
+                context.payload.comment.user.login,
+                context.payload.comment.author_association,
+              ),
+              prAuthorPermission,
+            });
           } else {
-            skipReason = `Unsupported event type: ${context.eventName}`;
+            decision = decideReview({ eventName: context.eventName });
           }
 
-          if (skipReason) {
-            core.notice(`Skipping review - ${skipReason}`);
+          if (decision.skipReason) {
+            core.notice(`Skipping review - ${decision.skipReason}`);
           }
-
-          core.exportVariable('SHOULD_RUN', shouldRun.toString());
-          return shouldRun;
+          core.exportVariable("SHOULD_RUN", String(decision.shouldRun));
+          return decision.shouldRun;
 
     - name: Setup Node.js
       if: env.SHOULD_RUN == 'true'
@@ -113,44 +92,21 @@ runs:
     - name: Install Continue CLI
       if: env.SHOULD_RUN == 'true'
       shell: bash
-      run: npm install -g @continuedev/cli@latest
+      # This fork does not publish the cn binary. The action installs one pinned
+      # release of the upstream package rather than @latest.
+      run: npm install -g @continuedev/cli@1.5.47
 
     - name: Setup Action Scripts
       if: env.SHOULD_RUN == 'true'
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        # Create directory for scripts
         mkdir -p .continue-action-scripts
-        
-        # Check if we're running in the Continue repo itself (scripts exist locally)
-        if [ -f "actions/general-review/scripts/buildPrompt.js" ] && [ -f "actions/general-review/scripts/writeMarkdown.js" ]; then
-          echo "Running in Continue repo - using local scripts from current checkout"
-          cp actions/general-review/scripts/buildPrompt.js .continue-action-scripts/buildPrompt.js
-          cp actions/general-review/scripts/writeMarkdown.js .continue-action-scripts/writeMarkdown.js
-        else
-          echo "Running in external repo - downloading scripts from Continue repo"
-          
-          # Download scripts from Continue repo
-          echo "Downloading buildPrompt.js..."
-          curl -sSL https://raw.githubusercontent.com/continuedev/continue/main/actions/general-review/scripts/buildPrompt.js \
-            -o .continue-action-scripts/buildPrompt.js
-          
-          echo "Downloading writeMarkdown.js..."
-          curl -sSL https://raw.githubusercontent.com/continuedev/continue/main/actions/general-review/scripts/writeMarkdown.js \
-            -o .continue-action-scripts/writeMarkdown.js
-        fi
-        
-        # Verify scripts exist
-        if [ ! -f .continue-action-scripts/buildPrompt.js ]; then
-          echo "Error: buildPrompt.js not found"
-          exit 1
-        fi
-        
-        if [ ! -f .continue-action-scripts/writeMarkdown.js ]; then
-          echo "Error: writeMarkdown.js not found"
-          exit 1
-        fi
-        
+        cp "$ACTION_PATH/scripts/buildPrompt.js" .continue-action-scripts/buildPrompt.js
+        cp "$ACTION_PATH/scripts/writeMarkdown.js" .continue-action-scripts/writeMarkdown.js
+        test -s .continue-action-scripts/buildPrompt.js
+        test -s .continue-action-scripts/writeMarkdown.js
         echo "Scripts ready:"
         ls -lh .continue-action-scripts/
 
@@ -267,7 +223,9 @@ runs:
         CONTINUE_API_KEY: ${{ inputs.continue-api-key }}
         CONTINUE_ORG: ${{ inputs.continue-org }}
         CONTINUE_AGENT: ${{ inputs.continue-agent }}
-        GITHUB_TOKEN: ${{ github.token }}
+        # The prompt is pull request text. Do not leave the job token in this process.
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
       run: |
         echo "Running Continue CLI with prompt:"
         echo "=================================="
@@ -321,9 +279,9 @@ runs:
           echo "Prompt length: $(wc -c < "$PROMPT_FILE") characters"
           
           # Use timeout to prevent hanging (360 seconds = 6 minutes)
-          echo "Executing command: cn --agent $CONTINUE_ORG/$CONTINUE_AGENT -p @$PROMPT_FILE --allow Bash"
+          echo "Executing command: cn --agent $CONTINUE_ORG/$CONTINUE_AGENT -p @$PROMPT_FILE --exclude Bash"
           
-          if timeout 360 cn --agent "$CONTINUE_ORG/$CONTINUE_AGENT" -p "@$PROMPT_FILE" --allow Bash > code_review_raw.md 2>cli_error.log; then
+          if timeout 360 cn --agent "$CONTINUE_ORG/$CONTINUE_AGENT" -p "@$PROMPT_FILE" --exclude Bash > code_review_raw.md 2>cli_error.log; then
             echo "Continue CLI completed successfully"
             echo "Raw output length: $(wc -c < code_review_raw.md) characters"
             

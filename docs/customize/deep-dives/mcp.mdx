@@ -27,9 +27,11 @@ For ready-to-use configurations for popular MCP servers, see [Example MCP Server
 
 ## Quick Start: How to Set Up Your First MCP Server
 
+A server file in the workspace is loaded when you open that folder in a trusted workspace, and Continuous starts it. The command runs as you, in that folder, with no further approval. Read the command, arguments and environment names before you commit a server file.
+
 Below is a quick example of setting up a new MCP server for use in your config:
 
-1. Create a folder called `.continue/mcpServers` at the top level of your workspace
+1. Create a folder called `.continuous/mcpServers` at the top level of your workspace. Files in the older `.continue/mcpServers` folder are still read.
 2. Add a file called `playwright-mcp.yaml` to this folder
 3. Write the following contents and save
 
@@ -56,7 +58,7 @@ The result will be a generated file called `hn.txt` in the current working direc
 ## Using JSON MCP Format from Claude, Cursor, Cline, etc
 
 <Info>
-If you're coming from another tool that uses JSON MCP format configuration files (like Claude Desktop, Cursor, or Cline), you can copy those JSON config files directly into your `.continuous/mcpServers/` directory (note the plural "Servers") and Continuous will automatically pick them up.
+If you're coming from another tool that uses JSON MCP format configuration files (like Claude Desktop, Cursor, or Cline), you can copy those JSON config files directly into your `.continuous/mcpServers/` directory (note the plural "Servers") and Continuous will load them. The same startup rule as above applies: a file in that directory is started when the folder is opened.
 
 For example, place your JSON MCP config file at `.continuous/mcpServers/mcp.json` in your workspace.
 </Info>

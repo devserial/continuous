@@ -1,10 +1,13 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const ncp = require("./copy-dir").ncp;
 const { rimrafSync } = require("rimraf");
 
 const { execCmdSync } = require("../../../scripts/util/index");
+const { downloadSqlite } = require("./download-copy-sqlite");
+const { installPinnedLancedb } = require("./pinned-lancedb");
 const {
   findOnnxRuntimeNodeDir,
   pruneOnnxRuntimeBin,
@@ -194,23 +197,7 @@ async function copyNodeModules() {
 async function downloadSqliteBinary(target) {
   console.log("[info] Downloading pre-built sqlite3 binary");
   rimrafSync("../../core/node_modules/sqlite3/build");
-  const downloadUrl = {
-    "darwin-arm64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v6-darwin-arm64.tar.gz",
-    "linux-arm64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v3-linux-arm64.tar.gz",
-    "win32-arm64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v6-win32-arm64.tar.gz",
-    "linux-x64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v3-linux-x64.tar.gz",
-    "darwin-x64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v6-darwin-x64.tar.gz",
-    "win32-x64":
-      "https://github.com/TryGhost/node-sqlite3/releases/download/v5.1.7/sqlite3-v5.1.7-napi-v3-win32-x64.tar.gz",
-  }[target];
-  execCmdSync(
-    `curl -L -o ../../core/node_modules/sqlite3/build.tar.gz ${downloadUrl}`,
-  );
+  await downloadSqlite(target, "../../core/node_modules/sqlite3/build.tar.gz");
   execCmdSync("cd ../../core/node_modules/sqlite3 && tar -xvzf build.tar.gz");
   fs.unlinkSync("../../core/node_modules/sqlite3/build.tar.gz");
 }
@@ -239,9 +226,9 @@ async function installNodeModuleInTempDirAndCopyToCurrent(packageName, toCopy) {
   console.log(`Copying ${packageName} to ${toCopy}`);
   // This is a way to install only one package without npm trying to install all the dependencies
   // Create a temporary directory for installing the package
-  const adjustedName = packageName.replace(/@/g, "").replace("/", "-");
-
-  const tempDir = `/tmp/continue-node_modules-${adjustedName}`;
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "continuous-node-modules-"),
+  );
   const currentDir = process.cwd();
 
   // Remove the dir we will be copying to
@@ -254,8 +241,9 @@ async function installNodeModuleInTempDirAndCopyToCurrent(packageName, toCopy) {
     // Move to the temporary directory
     process.chdir(tempDir);
 
-    // Initialize a new package.json and install the package
-    execCmdSync(`npm init -y && npm i -f ${packageName} --no-save`);
+    // Pack the pinned version and install that tarball. `npm i -f <name>` with no
+    // version would take whatever the registry currently calls latest.
+    installPinnedLancedb(packageName, tempDir);
 
     console.log(
       `Contents of: ${packageName}`,
@@ -287,7 +275,11 @@ async function installNodeModuleInTempDirAndCopyToCurrent(packageName, toCopy) {
     });
   } finally {
     // Clean up the temporary directory
-    // rimrafSync(tempDir);
+    try {
+      rimrafSync(tempDir);
+    } catch (err) {
+      console.warn("[warn] Failed to remove temp directory", tempDir, err);
+    }
 
     // Return to the original directory
     process.chdir(currentDir);

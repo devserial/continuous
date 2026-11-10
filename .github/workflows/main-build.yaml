@@ -48,37 +48,8 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.get-pr.outputs.pr_number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🔍 Getting branch name for PR #$PR_NUMBER..."
-
-          # Get the branch name for the PR
-          BRANCH_NAME=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefName --jq '.headRefName')
-
-          if [ -z "$BRANCH_NAME" ]; then
-            echo "❌ Could not find PR #$PR_NUMBER"
-            exit 1
-          fi
-
-          echo "Branch name: $BRANCH_NAME"
-
-          # Get the latest successful workflow run for the branch
-          RUN_ID=$(gh run list \
-            --repo "${{ github.repository }}" \
-            --workflow="pr-checks.yaml" \
-            --branch="$BRANCH_NAME" \
-            --json databaseId,status,conclusion \
-            --jq ".[] | select(.status == \"completed\" and .conclusion == \"success\") | .databaseId" \
-            | head -1)
-
-          if [ -z "$RUN_ID" ]; then
-            # PR Checks is skipped for docs-only and draft PRs, so there may be no run
-            echo "::notice::No successful PR Checks run for PR #$PR_NUMBER (branch: $BRANCH_NAME); skipping artifact republish"
-            echo "run_id=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Found successful workflow run: $RUN_ID"
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/ci/select-pr-check-run.js
 
       - name: Download PR artifact
         if: steps.find-run.outputs.run_id != ''
