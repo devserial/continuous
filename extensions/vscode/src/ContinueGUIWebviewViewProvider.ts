@@ -3,6 +3,12 @@ import * as vscode from "vscode";
 import { getTheme } from "./util/getTheme";
 import { getExtensionVersion, getvsCodeUriScheme } from "./util/util";
 import { getExtensionUri, getNonce, getUniqueId } from "./util/vscode";
+import {
+  GUI_WEBVIEW_ENABLE_COMMAND_URIS,
+  renderWebviewDocument,
+  webviewBootstrapScript,
+  webviewContentSecurityPolicy,
+} from "./util/webviewCsp";
 import { VsCodeWebviewProtocol } from "./webviewProtocol";
 
 import type { FileEdit } from "core";
@@ -98,7 +104,7 @@ export class ContinueGUIWebviewViewProvider
         vscode.Uri.joinPath(extensionUri, "gui"),
         vscode.Uri.joinPath(extensionUri, "assets"),
       ],
-      enableCommandUris: true,
+      enableCommandUris: GUI_WEBVIEW_ENABLE_COMMAND_URIS,
       portMapping: [
         {
           webviewPort: 65433,
@@ -127,56 +133,33 @@ export class ContinueGUIWebviewViewProvider
 
     this.webviewProtocol.webview = panel.webview;
 
-    return `<!DOCTYPE html>
-    <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script>const vscode = acquireVsCodeApi();</script>
-        <link href="${styleMainUri}" rel="stylesheet">
-
-        <title>Continuous</title>
-      </head>
-      <body>
-        <div id="root"></div>
-
-        ${
-          inDevelopmentMode
-            ? `<script type="module">
-          import RefreshRuntime from "http://localhost:5173/@react-refresh"
-          RefreshRuntime.injectIntoGlobalHook(window)
-          window.$RefreshReg$ = () => {}
-          window.$RefreshSig$ = () => (type) => type
-          window.__vite_plugin_react_preamble_installed__ = true
-          </script>`
-            : ""
-        }
-
-        <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
-
-        <script>localStorage.setItem("ide", '"vscode"')</script>
-        <script>localStorage.setItem("vsCodeUriScheme", '"${getvsCodeUriScheme()}"')</script>
-        <script>localStorage.setItem("extensionVersion", '"${getExtensionVersion()}"')</script>
-        <script>window.windowId = "${this.windowId}"</script>
-        <script>window.vscMachineId = "${getUniqueId()}"</script>
-        <script>window.vscMediaUrl = "${vscMediaUrl}"</script>
-        <script>window.ide = "vscode"</script>
-        <script>window.fullColorTheme = ${JSON.stringify(currentTheme)}</script>
-        <script>window.colorThemeName = "dark-plus"</script>
-        <script>window.workspacePaths = ${JSON.stringify(
-          vscode.workspace.workspaceFolders?.map((folder) =>
-            folder.uri.toString(),
-          ) || [],
-        )}</script>
-        <script>window.isFullScreen = ${isFullScreen}</script>
-
-        ${
-          edits
-            ? `<script>window.edits = ${JSON.stringify(edits)}</script>`
-            : ""
-        }
-        ${page ? `<script>window.location.pathname = "${page}"</script>` : ""}
-      </body>
-    </html>`;
+    const csp = webviewContentSecurityPolicy({
+      cspSource: panel.webview.cspSource,
+      nonce,
+      development: inDevelopmentMode,
+    });
+    const bootstrap = webviewBootstrapScript({
+      vsCodeUriScheme: getvsCodeUriScheme(),
+      extensionVersion: getExtensionVersion(),
+      windowId: this.windowId,
+      machineId: getUniqueId(),
+      vscMediaUrl,
+      theme: currentTheme,
+      workspacePaths:
+        vscode.workspace.workspaceFolders?.map((folder) =>
+          folder.uri.toString(),
+        ) || [],
+      isFullScreen,
+      edits,
+      page,
+    });
+    return renderWebviewDocument({
+      csp,
+      nonce,
+      scriptUri,
+      styleUri: styleMainUri,
+      bootstrap,
+      development: inDevelopmentMode,
+    });
   }
 }

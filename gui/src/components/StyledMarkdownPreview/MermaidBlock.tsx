@@ -10,6 +10,7 @@ import mermaid from "mermaid";
 import { useEffect, useRef, useState } from "react";
 import { useDebouncedEffect } from "../find/useDebounce";
 import { ToolTip } from "../gui/Tooltip";
+import { MERMAID_SECURITY_LEVEL, sanitizeMermaidSvg } from "./mermaidSanitize";
 
 const MINIMUM_ZOOM_STEP = 0.05;
 
@@ -63,7 +64,7 @@ const MERMAID_THEME_COLORS = {
 
 mermaid.initialize({
   startOnLoad: false,
-  securityLevel: "loose",
+  securityLevel: MERMAID_SECURITY_LEVEL,
   theme: "dark",
   themeVariables: {
     ...MERMAID_THEME_COLORS,
@@ -96,7 +97,9 @@ export default function MermaidDiagram({ code }: { code: string }) {
         try {
           await mermaid.parse(code);
           const renderedSVG = await mermaid.render(diagramId, code);
-          mermaidRenderContainerRef.current.innerHTML = renderedSVG.svg;
+          mermaidRenderContainerRef.current.innerHTML = sanitizeMermaidSvg(
+            renderedSVG.svg,
+          );
           setError("");
           const panzoom = Panzoom(mermaidRenderContainerRef.current, {
             step: MINIMUM_ZOOM_STEP,

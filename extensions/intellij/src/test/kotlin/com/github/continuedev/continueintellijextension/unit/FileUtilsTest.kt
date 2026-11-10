@@ -53,8 +53,8 @@ class FileUtilsTest : UsefulTestCase() {
 
     fun `test writeFile overwrites existing file`() {
         myFixture.createTempFile("file.txt", "old_text")
-        fileUtils.writeFile("file://$tmp/overwrite.txt", "new_text")
-        assertEquals("new_text", myFixture.readTempFile("overwrite.txt"))
+        fileUtils.writeFile("file://$tmp/file.txt", "new_text")
+        assertEquals("new_text", myFixture.readTempFile("file.txt"))
     }
 
     fun `test readFile`() {

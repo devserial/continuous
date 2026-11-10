@@ -8,6 +8,7 @@ import {
   vscForeground,
   vscInputBorder,
 } from "../";
+import { imageSourceRisk } from "./imageSourceRisk";
 
 const ImagePlaceholder = styled.div`
   border: 1px solid ${vscInputBorder};
@@ -97,28 +98,10 @@ export const SecureImageComponent: React.FC<SecureImageComponentProps> = ({
     return <span>[Invalid image: no source]</span>;
   }
 
-  // Parse URL to check for query parameters
-  let queryParams: Record<string, string> = {};
-  let hasQueryParams = false;
-
-  try {
-    const url = new URL(src, window.location.href);
-    const params = new URLSearchParams(url.search);
-    params.forEach((value, key) => {
-      queryParams[key] = value;
-      hasQueryParams = true;
-    });
-  } catch (e) {
-    // If URL parsing fails, treat src as a relative path
-    const queryIndex = src.indexOf("?");
-    if (queryIndex > -1) {
-      hasQueryParams = true;
-      const params = new URLSearchParams(src.substring(queryIndex));
-      params.forEach((value, key) => {
-        queryParams[key] = value;
-      });
-    }
-  }
+  const { remoteHost, queryParams, hasQueryParams } = imageSourceRisk(
+    src,
+    window.location.href,
+  );
 
   if (showImage && !imageError) {
     return (
@@ -139,9 +122,16 @@ export const SecureImageComponent: React.FC<SecureImageComponentProps> = ({
   return (
     <ImagePlaceholder>
       <WarningText>
-        Image blocked for security. External images can leak data through URL
-        parameters. Click to load if you trust the source.
+        {remoteHost
+          ? `Image blocked for security. Loading it sends the full URL, including the path, to ${remoteHost}.`
+          : "Image blocked for security. Click to load if you trust the source."}
       </WarningText>
+
+      {remoteHost && (
+        <UrlDisplay>
+          <strong>Host:</strong> {remoteHost}
+        </UrlDisplay>
+      )}
 
       <UrlDisplay>
         <strong>URL:</strong> {src}

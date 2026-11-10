@@ -65,10 +65,13 @@ export const savePolicySettings = createAsyncThunk<void, void, ThunkApiType>(
       },
       builtin: policyExtras.builtin,
     };
-    try {
-      await extra.ideMessenger.request("policy/save", update);
-    } catch (e) {
-      console.warn("Could not save the policy settings", e);
+    const res = await extra.ideMessenger.request("policy/save", update);
+    if (res.status !== "success") {
+      throw new Error(
+        res.status === "error"
+          ? res.error
+          : "Could not save the policy settings",
+      );
     }
   },
 );
@@ -77,18 +80,26 @@ export const changePolicyLevel = createAsyncThunk<
   void,
   { area: PolicyArea; level: PolicyLevel },
   ThunkApiType
->("policy/changeLevel", async (change, { dispatch }) => {
+>("policy/changeLevel", async (change, { dispatch, getState }) => {
+  const previous = getState().ui.policyLevels;
   dispatch(setPolicyLevel(change));
-  await dispatch(savePolicySettings());
+  const saved = await dispatch(savePolicySettings());
+  if (savePolicySettings.rejected.match(saved)) {
+    dispatch(setPolicyLevels(previous));
+  }
 });
 
 export const applyPolicyPreset = createAsyncThunk<
   void,
   PolicyLevels,
   ThunkApiType
->("policy/applyPreset", async (levels, { dispatch }) => {
+>("policy/applyPreset", async (levels, { dispatch, getState }) => {
+  const previous = getState().ui.policyLevels;
   dispatch(setPolicyLevels(levels));
-  await dispatch(savePolicySettings());
+  const saved = await dispatch(savePolicySettings());
+  if (savePolicySettings.rejected.match(saved)) {
+    dispatch(setPolicyLevels(previous));
+  }
 });
 
 export const changePolicyExtras = createAsyncThunk<
@@ -97,5 +108,9 @@ export const changePolicyExtras = createAsyncThunk<
   ThunkApiType
 >("policy/changeExtras", async (change, { dispatch }) => {
   dispatch(setPolicyExtras(change));
-  await dispatch(savePolicySettings());
+  try {
+    await dispatch(savePolicySettings()).unwrap();
+  } catch (e) {
+    console.warn("Could not save the policy settings", e);
+  }
 });

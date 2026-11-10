@@ -10,6 +10,7 @@ import com.github.continuedev.continueintellijextension.utils.*
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.util.ExecUtil
+import com.github.continuedev.continueintellijextension.browser.ContinueBrowserSecurity
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.lang.annotation.HighlightSeverity
@@ -286,6 +287,9 @@ class IntelliJIDE(
         }
 
     override suspend fun openUrl(url: String) {
+        if (!ContinueBrowserSecurity.isHttpUrl(url)) {
+            return
+        }
         withContext(Dispatchers.IO) {
             BrowserUtil.browse(url)
         }
@@ -432,31 +436,31 @@ class IntelliJIDE(
         val ideInfo = this.getIdeInfo()
         if (ideInfo.remoteName == "local") {
             try {
-                // Create a single combined ignore pattern using glob brace expansion
                 val defaultIgnorePattern = DEFAULT_IGNORES.joinToString(",") { it }
-                
-                var commandArgs = mutableListOf<String>(
-                    ripgrep,
-                    "--files",
-                    "--iglob",
-                    pattern,
-                    "--ignore-file",
-                    ".continueignore",
-                    "--ignore-file",
-                    ".gitignore",
-                    "--glob",
-                    "!{${defaultIgnorePattern}}" 
+                val args = FileSearch.fileArgs(ripgrep, pattern, defaultIgnorePattern)
+                val roots = FileSearch.directories(
+                    workspaceDirectories().toList(),
+                    project.basePath,
                 )
-                if (maxResults != null) {
-                    commandArgs.add("--max-count")
-                    commandArgs.add(maxResults.toString())
+                val collected = mutableListOf<String>()
+                var failed: Exception? = null
+                for (root in roots) {
+                    if (maxResults != null && collected.size >= maxResults) break
+                    try {
+                        val command = GeneralCommandLine(args)
+                        command.setWorkDirectory(root)
+                        val stdout = ExecUtil.execAndGetOutput(command).stdout
+                        for (line in FileSearch.lines(stdout)) {
+                            collected.add(FileSearch.displayPath(root, line))
+                        }
+                    } catch (exception: Exception) {
+                        failed = exception
+                    }
                 }
-
-                val command = GeneralCommandLine(commandArgs)
-
-                command.setWorkDirectory(project.basePath)
-                val results = ExecUtil.execAndGetOutput(command).stdout
-                return results.split("\n")
+                if (collected.isEmpty() && failed != null) {
+                    throw failed
+                }
+                return FileSearch.cap(collected, maxResults)
             } catch (exception: Exception) {
                 val message = "Error executing ripgrep: ${exception.message}"
                 showToast(ToastType.ERROR, message)
@@ -515,7 +519,10 @@ class IntelliJIDE(
 
 
     override suspend fun subprocess(command: String, cwd: String?): List<Any> {
-        val commandList = command.split(" ")
+        val commandList = CommandArgs.split(command)
+        if (commandList.isEmpty()) {
+            return listOf("", "")
+        }
         val builder = ProcessBuilder(commandList)
 
         if (cwd != null) {

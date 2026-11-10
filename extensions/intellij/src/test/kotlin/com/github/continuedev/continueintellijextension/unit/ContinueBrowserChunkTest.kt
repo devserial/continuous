@@ -47,6 +47,8 @@ class ContinueBrowserChunkTest : TestCase() {
         assertTrue(scripts.finalize.contains("TextDecoder"))
         assertTrue(scripts.finalize.contains("JSON.parse"))
         assertTrue(scripts.finalize.contains("""delete window.__cc["myId"]"""))
+        assertTrue(scripts.finalize.contains("\"http://continue\""))
+        assertFalse(scripts.finalize.contains("\"*\""))
     }
 
     fun `test cleanup script deletes buffer`() {

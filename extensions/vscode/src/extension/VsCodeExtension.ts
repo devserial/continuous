@@ -31,6 +31,7 @@ import { registerAllPromptFilesCompletionProviders } from "../lang-server/prompt
 import EditDecorationManager from "../quickEdit/EditDecorationManager";
 import { QuickEdit } from "../quickEdit/QuickEditQuickPick";
 import { UriEventHandler } from "../stubs/uriHandler";
+import { handleProfileDeepLink } from "../util/profileDeepLink";
 import { Battery } from "../util/battery";
 import { FileSearch } from "../util/FileSearch";
 import { VsCodeIdeUtils } from "../util/ideUtils";
@@ -359,16 +360,25 @@ export class VsCodeExtension {
       ),
     );
 
-    // Handle uri events
+    // Handle uri events. A link that names a profile waits for confirmation.
     this.uriHandler.event((uri) => {
-      const queryParams = new URLSearchParams(uri.query);
-      let profileId = queryParams.get("profile_id");
-
-      this.core.invoke("config/refreshProfiles", {
-        reason: "VS Code deep link",
-        selectProfileId:
-          profileId === "null" ? undefined : (profileId ?? undefined),
-      });
+      void handleProfileDeepLink(
+        uri.query,
+        async (label) => {
+          const choice = await vscode.window.showInformationMessage(
+            `Switch the Continuous profile to ${label}?`,
+            { modal: true },
+            "Switch",
+          );
+          return choice === "Switch";
+        },
+        (selectProfileId) => {
+          this.core.invoke("config/refreshProfiles", {
+            reason: "VS Code deep link",
+            selectProfileId,
+          });
+        },
+      );
     });
 
     // Battery

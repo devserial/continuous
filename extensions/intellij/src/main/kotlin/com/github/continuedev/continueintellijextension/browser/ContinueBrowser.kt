@@ -1,9 +1,10 @@
 package com.github.continuedev.continueintellijextension.browser
 
-import com.github.continuedev.continueintellijextension.constants.MessageTypes
+import com.github.continuedev.continueintellijextension.constants.WebviewIdeGate
 import com.github.continuedev.continueintellijextension.services.ContinuePluginService
 import com.github.continuedev.continueintellijextension.services.GsonService
 import com.github.continuedev.continueintellijextension.utils.uuid
+import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
@@ -12,7 +13,10 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.ui.jcef.*
 import org.cef.CefApp
 import org.cef.browser.CefBrowser
+import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandlerAdapter
+import org.cef.handler.CefRequestHandlerAdapter
+import org.cef.network.CefRequest
 import java.util.Base64
 import javax.swing.JComponent
 
@@ -34,22 +38,36 @@ class ContinueBrowser(
             val data = json.data
             val messageId = json.messageId
 
-            if (MessageTypes.PASS_THROUGH_TO_CORE.contains(messageType)) {
-                project.service<ContinuePluginService>().coreMessenger?.request(messageType, data, messageId) { data ->
-                    sendToWebview(messageType, data, messageId ?: uuid())
+            when (WebviewIdeGate.route(messageType)) {
+                WebviewIdeGate.Route.CORE -> {
+                    project.service<ContinuePluginService>().coreMessenger?.request(messageType, data, messageId) { response ->
+                        sendToWebview(messageType, response, messageId ?: uuid())
+                    }
                 }
-                return@addHandler null
-            }
 
-            // If not pass through, then put it in the status/content/done format for webview
-            // Core already sends this format
-            if (msg != null) {
-                project.service<ContinuePluginService>().ideProtocolClient?.handleMessage(msg) { data ->
+                WebviewIdeGate.Route.IDE -> {
+                    if (msg != null) {
+                        project.service<ContinuePluginService>().ideProtocolClient?.handleMessage(msg) { response ->
+                            sendToWebview(
+                                messageType,
+                                mapOf(
+                                    "status" to "success",
+                                    "content" to response,
+                                    "done" to true
+                                ),
+                                messageId ?: uuid()
+                            )
+                        }
+                    }
+                }
+
+                WebviewIdeGate.Route.REJECT -> {
+                    log.warn("Rejected panel message: $messageType")
                     sendToWebview(
-                        messageType,
+                        messageType ?: "",
                         mapOf(
-                            "status" to "success",
-                            "content" to data,
+                            "status" to "error",
+                            "error" to "This message is not available to the panel",
                             "done" to true
                         ),
                         messageId ?: uuid()
@@ -60,8 +78,26 @@ class ContinueBrowser(
             null
         }
 
-        browser.jbCefClient.addLoadHandler(OnPageLoad {
-            executeJavaScript(myJSQueryOpenInBrowser)
+        browser.jbCefClient.addLoadHandler(OnPageLoad { frameUrl ->
+            if (ContinueBrowserSecurity.shouldInjectBridge(frameUrl, getGuiUrl())) {
+                executeJavaScript(myJSQueryOpenInBrowser)
+            }
+        }, browser.cefBrowser)
+
+        browser.jbCefClient.addRequestHandler(object : CefRequestHandlerAdapter() {
+            override fun onBeforeBrowse(
+                browser: CefBrowser?,
+                frame: CefFrame?,
+                request: CefRequest?,
+                userGesture: Boolean,
+                isRedirect: Boolean,
+            ): Boolean {
+                val decision = ContinueBrowserSecurity.navigation(request?.url, getGuiUrl())
+                if (decision == ContinueBrowserSecurity.Navigation.OPEN_EXTERNAL) {
+                    request?.url?.let { BrowserUtil.browse(it) }
+                }
+                return decision != ContinueBrowserSecurity.Navigation.ALLOW
+            }
         }, browser.cefBrowser)
 
         // Load the url only after the protocolClient is initialized,
@@ -94,7 +130,9 @@ class ContinueBrowser(
         try {
             if (json.length <= CHUNKED_MESSAGE_THRESHOLD) {
                 browser.cefBrowser.executeJavaScript(
-                    """window.postMessage($json, "*");""", getGuiUrl(), 0
+                    ContinueBrowserSecurity.postMessageScript(json, getGuiUrl()),
+                    getGuiUrl(),
+                    0,
                 )
             } else {
                 sendChunked(json, messageId)
@@ -106,7 +144,8 @@ class ContinueBrowser(
 
     // Base64-encode and send in 512KB chunks to avoid JCEF freezing on large JS source strings
     private fun sendChunked(json: String, bufferId: String) {
-        val scripts = buildChunkScripts(json, bufferId)
+        val origin = ContinueBrowserSecurity.originOf(getGuiUrl()) ?: "http://continue"
+        val scripts = buildChunkScripts(json, bufferId, targetOrigin = origin)
         val url = getGuiUrl()
 
         browser.cefBrowser.executeJavaScript(scripts.init, url, 0)
@@ -147,7 +186,7 @@ class ContinueBrowser(
     )
 
     private class OnPageLoad(
-        private val onLoad: () -> Unit
+        private val onLoad: (url: String?) -> Unit
     ) : CefLoadHandlerAdapter() {
         override fun onLoadingStateChange(
             browser: CefBrowser?,
@@ -156,7 +195,7 @@ class ContinueBrowser(
             canGoForward: Boolean
         ) {
             if (!isLoading)
-                onLoad()
+                onLoad(browser?.url)
         }
     }
 
@@ -174,7 +213,12 @@ class ContinueBrowser(
         private fun getGuiUrl() =
             System.getenv("GUI_URL") ?: "http://continue/index.html"
 
-        internal fun buildChunkScripts(json: String, bufferId: String, chunkSize: Int = CHUNK_SIZE): ChunkScripts {
+        internal fun buildChunkScripts(
+            json: String,
+            bufferId: String,
+            chunkSize: Int = CHUNK_SIZE,
+            targetOrigin: String = "http://continue",
+        ): ChunkScripts {
             val encoded = Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
             val chunks = mutableListOf<String>()
 
@@ -189,7 +233,7 @@ class ContinueBrowser(
             return ChunkScripts(
                 init = """window.__cc=window.__cc||{};window.__cc["$bufferId"]=[];""",
                 chunks = chunks,
-                finalize = """try{var b=atob(window.__cc["$bufferId"].join(""));window.postMessage(JSON.parse(new TextDecoder().decode(Uint8Array.from(b,function(c){return c.charCodeAt(0)}))),"*")}
+                finalize = """try{var b=atob(window.__cc["$bufferId"].join(""));window.postMessage(JSON.parse(new TextDecoder().decode(Uint8Array.from(b,function(c){return c.charCodeAt(0)}))),${ContinueBrowserSecurity.jsString(targetOrigin)})}
 finally{delete window.__cc["$bufferId"]}""",
                 cleanup = """delete window.__cc["$bufferId"];""",
             )

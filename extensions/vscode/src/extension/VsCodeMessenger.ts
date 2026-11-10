@@ -28,6 +28,15 @@ import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
 
 import { VsCodeExtension } from "./VsCodeExtension";
+import {
+  isInsideWorkspace,
+  openUrlFromWebviewOk,
+  policySavePayloadOk,
+  raisedPolicyAreas,
+  runCommandFromWebviewOk,
+  subprocessFromWebviewOk,
+  writeFileFromWebviewOk,
+} from "./webviewMessageGuard";
 
 type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
   ToWebviewFromCoreProtocol;
@@ -261,6 +270,12 @@ export class VsCodeMessenger {
     /** PASS THROUGH FROM WEBVIEW TO CORE AND BACK **/
     WEBVIEW_TO_CORE_PASS_THROUGH.forEach((messageType) => {
       this.onWebview(messageType, async (msg) => {
+        if (messageType === "policy/save") {
+          const allowed = await this.confirmPolicySave(msg.data);
+          if (!allowed) {
+            throw new Error("The permission change was not confirmed.");
+          }
+        }
         return await this.inProcessMessenger.externalRequest(
           messageType,
           msg.data,
@@ -317,7 +332,17 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("getWorkspaceDirs", async (msg) => {
       return ide.getWorkspaceDirs();
     });
-    this.onWebviewOrCore("writeFile", async (msg) => {
+    this.onWebview("writeFile", async (msg) => {
+      if (!writeFileFromWebviewOk(msg.data)) {
+        throw new Error("The file write was not accepted.");
+      }
+      const dirs = await ide.getWorkspaceDirs();
+      if (!isInsideWorkspace(msg.data.path, dirs)) {
+        throw new Error("The file is outside the workspace.");
+      }
+      return ide.writeFile(msg.data.path, msg.data.contents);
+    });
+    this.onCore("writeFile", async (msg) => {
       return ide.writeFile(msg.data.path, msg.data.contents);
     });
     this.onWebviewOrCore("showVirtualFile", async (msg) => {
@@ -326,7 +351,13 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("openFile", async (msg) => {
       return ide.openFile(msg.data.path);
     });
-    this.onWebviewOrCore("runCommand", async (msg) => {
+    this.onWebview("runCommand", async (msg) => {
+      if (!runCommandFromWebviewOk(msg.data)) {
+        throw new Error("The command was not accepted.");
+      }
+      await ide.runCommand(msg.data.command);
+    });
+    this.onCore("runCommand", async (msg) => {
       await ide.runCommand(msg.data.command);
     });
     this.onWebviewOrCore("getSearchResults", async (msg) => {
@@ -335,7 +366,20 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("getFileResults", async (msg) => {
       return ide.getFileResults(msg.data.pattern, msg.data.maxResults);
     });
-    this.onWebviewOrCore("subprocess", async (msg) => {
+    this.onWebview("subprocess", async (msg) => {
+      if (
+        !subprocessFromWebviewOk(msg.data) ||
+        typeof msg.data.cwd !== "string"
+      ) {
+        throw new Error("The command was not accepted.");
+      }
+      const dirs = await ide.getWorkspaceDirs();
+      if (!isInsideWorkspace(msg.data.cwd, dirs)) {
+        throw new Error("The command was not accepted.");
+      }
+      return ide.subprocess(msg.data.command, msg.data.cwd);
+    });
+    this.onCore("subprocess", async (msg) => {
       return ide.subprocess(msg.data.command, msg.data.cwd);
     });
     this.onWebviewOrCore("getProblems", async (msg) => {
@@ -367,7 +411,13 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("readFile", async (msg) => {
       return await ide.readFile(msg.data.filepath);
     });
-    this.onWebviewOrCore("openUrl", (msg) => {
+    this.onWebview("openUrl", (msg) => {
+      if (!openUrlFromWebviewOk(msg.data)) {
+        throw new Error("This link cannot be opened from the panel.");
+      }
+      vscode.env.openExternal(vscode.Uri.parse(msg.data));
+    });
+    this.onCore("openUrl", (msg) => {
       vscode.env.openExternal(vscode.Uri.parse(msg.data));
     });
 
@@ -430,5 +480,28 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("reportError", async (msg) => {
       await handleLLMError(msg.data);
     });
+  }
+
+  /**
+   * A save that raises a permission level waits for a native confirmation.
+   * Anything that is not a settings object is refused.
+   */
+  private async confirmPolicySave(data: unknown): Promise<boolean> {
+    if (!policySavePayloadOk(data)) return false;
+    const levels = (data as { levels?: Record<string, string> }).levels;
+    if (!levels) return true;
+    const loaded = await this.inProcessMessenger.externalRequest(
+      "policy/load",
+      undefined,
+    );
+    const current = loaded?.settings?.levels;
+    const raised = raisedPolicyAreas(current, levels);
+    if (raised.length === 0) return true;
+    const choice = await vscode.window.showWarningMessage(
+      `Raise the Continuous permission level for ${raised.join(", ")}?`,
+      { modal: true },
+      "Raise",
+    );
+    return choice === "Raise";
   }
 }

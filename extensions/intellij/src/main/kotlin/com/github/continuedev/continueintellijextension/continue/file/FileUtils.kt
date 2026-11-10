@@ -31,8 +31,8 @@ class FileUtils(
         val pathFilename = VfsUtil.extractFileName(path)
             ?: return LOG.warn("Could not get filename for $path")
         runWriteAction {
-            val newFile = vfsDirectory.createChildData(this, pathFilename)
-            VfsUtil.saveText(newFile, content)
+            val file = vfsDirectory.findOrCreateChildData(this, pathFilename)
+            VfsUtil.saveText(file, content)
         }
     }
 

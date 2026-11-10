@@ -12,10 +12,9 @@ describe("SecureImageComponent", () => {
       render(<SecureImageComponent src="https://example.com/image.jpg" />);
 
       expect(
-        screen.getByText(
-          /Image blocked for security.*External images can leak data/,
-        ),
+        screen.getByText(/Image blocked for security.*including the path/),
       ).toBeInTheDocument();
+      expect(screen.getByText("example.com")).toBeInTheDocument();
       expect(screen.getByText("Load Image")).toBeInTheDocument();
       expect(screen.queryByRole("img")).not.toBeInTheDocument();
     });
@@ -53,6 +52,20 @@ describe("SecureImageComponent", () => {
     it("should not show query parameter warning for URLs without parameters", () => {
       render(<SecureImageComponent src="https://example.com/image.jpg" />);
 
+      expect(
+        screen.queryByText(/Warning: URL contains query parameters/),
+      ).not.toBeInTheDocument();
+    });
+
+    it("names the host when a remote path has no query string", () => {
+      render(
+        <SecureImageComponent src="https://evil.example/leak/token.png" />,
+      );
+
+      expect(
+        screen.getByText(/including the path, to evil\.example/),
+      ).toBeInTheDocument();
+      expect(screen.getByText("evil.example")).toBeInTheDocument();
       expect(
         screen.queryByText(/Warning: URL contains query parameters/),
       ).not.toBeInTheDocument();
@@ -99,9 +112,7 @@ describe("SecureImageComponent", () => {
 
       // Warning message should be gone
       expect(
-        screen.queryByText(
-          /Image blocked for security.*External images can leak data/,
-        ),
+        screen.queryByText(/Image blocked for security/),
       ).not.toBeInTheDocument();
     });
 

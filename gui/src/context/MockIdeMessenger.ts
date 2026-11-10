@@ -39,6 +39,7 @@ const DEFAULT_MOCK_CORE_RESPONSES: MockResponses = {
   "history/list": [],
   "docs/getIndexedPages": [],
   "history/save": undefined,
+  "policy/save": undefined,
   "providers/list": {
     instances: [],
     globalFileUri: "file:///Users/user/.continuous/providers.yaml",

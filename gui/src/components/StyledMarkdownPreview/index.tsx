@@ -28,6 +28,7 @@ import { StepContainerPreToolbar } from "./StepContainerPreToolbar";
 import SymbolLink from "./SymbolLink";
 import { SyntaxHighlightedPre } from "./SyntaxHighlightedPre";
 import { isSymbolNotRif, matchCodeToSymbolOrFile } from "./utils";
+import { safeMarkdownHref } from "./utils/safeMarkdownHref";
 import { fixDoubleDollarNewLineLatex } from "./utils/fixDoubleDollarLatex";
 import { patchNestedMarkdown } from "./utils/patchNestedMarkdown";
 import { rehypeTableCellAlign } from "./utils/rehypeTableCellAlign";
@@ -296,9 +297,17 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
     rehypeReactOptions: {
       components: {
         a: ({ ...aProps }) => {
+          const href = safeMarkdownHref(
+            typeof aProps.href === "string" ? aProps.href : undefined,
+          );
           return (
             <ToolTip place="top" className="m-0 p-0" content={aProps.href}>
-              <a href={aProps.href} target="_blank" className="hover:underline">
+              <a
+                href={href}
+                target={href ? "_blank" : undefined}
+                rel={href ? "noreferrer" : undefined}
+                className="hover:underline"
+              >
                 {aProps.children}
               </a>
             </ToolTip>
