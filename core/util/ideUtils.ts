@@ -1,10 +1,41 @@
+import * as path from "node:path";
 import { IDE } from "..";
 
 import {
+  findUriInDirs,
   joinEncodedUriPathSegmentToUri,
   joinPathsToUri,
   pathToUriPathSegment,
 } from "./uri";
+
+/** True for `file://`, `vscode-remote://`, and any other scheme. */
+function hasScheme(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+}
+
+/** A filesystem path is `parent` or inside it. Used when a caller has no URI. */
+function plainInside(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return (
+    rel === "" ||
+    (rel !== ".." &&
+      !rel.startsWith(`..${path.sep}`) &&
+      !rel.startsWith("../") &&
+      !path.isAbsolute(rel))
+  );
+}
+
+/**
+ * Whether `fullUri` stays inside `dirUri`. URI pairs go through the normalized
+ * comparison. Plain paths (some tests and stubs) are compared as filesystem
+ * paths so a missing scheme does not throw.
+ */
+export function staysInDir(fullUri: string, dirUri: string): boolean {
+  if (hasScheme(fullUri) && hasScheme(dirUri)) {
+    return findUriInDirs(fullUri, [dirUri]).foundInDir !== null;
+  }
+  return plainInside(dirUri, fullUri);
+}
 
 /*
   This function takes a relative (to workspace) filepath
@@ -19,12 +50,63 @@ export async function resolveRelativePathInDir(
   const dirs = dirUriCandidates ?? (await ide.getWorkspaceDirs());
   for (const dirUri of dirs) {
     const fullUri = joinPathsToUri(dirUri, path);
+    // A path that climbs out of this directory is not inside it, even when
+    // the file exists. Callers treat a returned URI as contained.
+    if (!staysInDir(fullUri, dirUri)) continue;
     if (await ide.fileExists(fullUri)) {
       return fullUri;
     }
   }
 
   return undefined;
+}
+
+/** Decoded path of a URI, or the string itself when it is not one. */
+function pathOfUri(uri: string): string {
+  try {
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(uri)) {
+      return decodeURIComponent(new URL(uri).pathname).replace(/\\/g, "/");
+    }
+  } catch {
+    // Not a URI.
+  }
+  return uri.replace(/\\/g, "/");
+}
+
+/**
+ * True when `filepath` is the whole path or a separator-bounded suffix.
+ * `a.ts` matches `/src/a.ts` and does not match `/src/data.ts`.
+ */
+export function uriHasPathSuffix(uri: string, filepath: string): boolean {
+  const want = filepath
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "");
+  if (
+    !want ||
+    want.split("/").some((seg) => seg === "" || seg === "." || seg === "..")
+  ) {
+    return false;
+  }
+  const got = pathOfUri(uri).replace(/\/+$/, "");
+  return got === want || got.endsWith("/" + want);
+}
+
+/**
+ * The single open file that ends with `filepath` and sits inside a workspace
+ * directory. A file outside the workspace, or two matches, is not a target.
+ */
+export async function uniqueOpenFileInWorkspace(
+  filepath: string,
+  ide: IDE,
+): Promise<string | undefined> {
+  const dirs = await ide.getWorkspaceDirs();
+  const hits = (await ide.getOpenFiles()).filter(
+    (uri) =>
+      uriHasPathSuffix(uri, filepath) &&
+      dirs.some((dir) => staysInDir(uri, dir)),
+  );
+  return hits.length === 1 ? hits[0] : undefined;
 }
 
 /*
@@ -82,7 +164,11 @@ export async function inferResolvedUriFromRelativePath(
   // Sometimes the model will decide to only output the base name or small number of path parts
   // in which case we shouldn't create a new file if it matches the current file
   const activeFile = await ide.getCurrentFile();
-  if (activeFile && activeFile.path.endsWith(relativePath)) {
+  if (
+    activeFile &&
+    uriHasPathSuffix(activeFile.path, relativePath) &&
+    dirs.some((dir) => staysInDir(activeFile.path, dir))
+  ) {
     return activeFile.path;
   }
 

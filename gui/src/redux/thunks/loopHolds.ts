@@ -1,4 +1,5 @@
 import { BuiltInToolNames } from "core/tools/builtIn";
+import { itemBudgetStatus, overBudgetReport } from "core/util/itemBudget";
 import { isEditTool } from "../../util/toolCallState";
 import {
   approvalHeldResult,
@@ -11,6 +12,7 @@ import {
   itemTurnLimitResult,
   itemTurnState,
   holdQuestion,
+  loopTokensFromUsage,
   LOOP_REPEAT_LIMIT,
   loopGrantKey,
   REPLAN_HOLD_RESULT,
@@ -65,6 +67,36 @@ export function endRunAtTurnLimit(
   const { loop } = getState().session;
   if (loop?.current?.kind !== "item") return false;
   const turns = itemTurns(getState(), loop.current.historyIndex);
+  // Over the item's own budget: the run ends here, its work kept
+  const state = getState();
+  const item = state.session.taskPlan?.items.find(
+    (i) => i.id === loop.current?.itemId,
+  );
+  if (item?.budget && !loop.current.report) {
+    const status = itemBudgetStatus(loop, item, {
+      sessionTokens: state.session.usage
+        ? loopTokensFromUsage(state.session.usage)
+        : 0,
+      now: new Date(),
+      turns,
+    });
+    if (status.state === "over") {
+      const breach = {
+        which: status.which,
+        used: status.used,
+        limit: status.limit,
+      };
+      commitLoop(dispatch, getState, {
+        ...loop,
+        current: {
+          ...loop.current,
+          overBudget: breach,
+          report: overBudgetReport(breach),
+        },
+      });
+      return true;
+    }
+  }
   if (itemTurnState(loop, turns) !== "end") return false;
   commitLoop(dispatch, getState, {
     ...loop,

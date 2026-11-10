@@ -1,11 +1,16 @@
 import {
+  BoltIcon,
   CheckIcon,
   ChevronDownIcon,
   ClipboardDocumentListIcon,
   EyeIcon,
   ExclamationTriangleIcon,
+  HandRaisedIcon,
+  LockOpenIcon,
   PencilSquareIcon,
   QuestionMarkCircleIcon,
+  ShieldCheckIcon,
+  SparklesIcon,
   WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import {
@@ -39,6 +44,30 @@ const AREA_ICONS: Record<PolicyArea, typeof EyeIcon> = {
   edits: PencilSquareIcon,
   plan: ClipboardDocumentListIcon,
   questions: QuestionMarkCircleIcon,
+};
+
+/**
+ * A glyph and a colour for each level, so a chip reads without its text: the
+ * glyph says what happens (a raised hand asks you, a shield checks against
+ * your rules, sparkles is the reviewer model, an open lock lets rules decide,
+ * a bolt ignores them) and the colour says how far the trust goes, from green
+ * (you decide) through blue (a reviewer) and amber (rules only) to red
+ * (nothing checks).
+ */
+const LEVEL_GLYPHS: Record<PolicyLevel, typeof EyeIcon> = {
+  manual: HandRaisedIcon,
+  cautious: ShieldCheckIcon,
+  automatic: SparklesIcon,
+  permissive: LockOpenIcon,
+  yolo: BoltIcon,
+};
+
+const LEVEL_TONES: Record<PolicyLevel, { chip: string; text: string }> = {
+  manual: { chip: "bg-success/20 text-success", text: "text-success" },
+  cautious: { chip: "bg-success/20 text-success", text: "text-success" },
+  automatic: { chip: "bg-link/20 text-link", text: "text-link" },
+  permissive: { chip: "bg-warning/20 text-warning", text: "text-warning" },
+  yolo: { chip: "bg-error/20 text-error", text: "text-error" },
 };
 
 const AREA_HINTS: Record<PolicyArea, string> = {
@@ -77,10 +106,11 @@ export function AreaLevelSelect({ area, variant }: AreaLevelSelectProps) {
   const effective = useAppSelector((s) => selectEffectiveLevels(s)[area]);
   const status = useAppSelector(selectAutoApproval);
   const Icon = AREA_ICONS[area];
-  const top = effective === "yolo";
   const label = `${POLICY_AREA_LABELS[area]}: ${policyLevelLabel(area, saved)}`;
   // A saved Automatic that cannot run is in force as Cautious, so say so
   const shown: PolicyLevel = saved === "automatic" ? effective : saved;
+  const LevelGlyph = LEVEL_GLYPHS[shown];
+  const tone = LEVEL_TONES[shown];
 
   return (
     <Listbox
@@ -96,19 +126,34 @@ export function AreaLevelSelect({ area, variant }: AreaLevelSelectProps) {
         <ListboxButton
           data-testid={`policy-select-${area}`}
           aria-label={label}
-          className={`flex-none gap-1 rounded-full border-none px-1.5 py-0.5 transition-colors duration-200 hover:brightness-110 ${
-            top ? "bg-error/20 text-error" : "bg-lightgray/20 text-description"
+          className={`flex-none gap-1 rounded-full border-none transition-colors duration-200 hover:brightness-110 ${tone.chip} ${
+            variant === "row" ? "px-1.5 py-0.5" : "px-1.5 py-1"
           }`}
         >
-          <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
           {variant === "row" ? (
-            <span>{policyLevelLabel(area, shown)}</span>
+            <>
+              <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <LevelGlyph className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span>{policyLevelLabel(area, shown)}</span>
+              <ChevronDownIcon
+                className="h-2 w-2 shrink-0"
+                aria-hidden="true"
+              />
+            </>
           ) : (
-            <span className="text-2xs" data-testid={`policy-level-${area}`}>
-              {policyLevelLabel(area, shown).slice(0, 3)}
-            </span>
+            <>
+              <span className="relative flex">
+                <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <LevelGlyph
+                  className="absolute -right-1.5 -bottom-1 h-2.5 w-2.5 rounded-full bg-background p-px"
+                  aria-hidden="true"
+                />
+              </span>
+              <span className="sr-only" data-testid={`policy-level-${area}`}>
+                {policyLevelLabel(area, shown)}
+              </span>
+            </>
           )}
-          <ChevronDownIcon className="h-2 w-2 shrink-0" aria-hidden="true" />
         </ListboxButton>
         <ListboxOptions className="max-w-72 min-w-48">
           <div className="px-2 py-1 text-2xs text-description-muted">
@@ -130,8 +175,17 @@ export function AreaLevelSelect({ area, variant }: AreaLevelSelectProps) {
                 data-testid={`policy-option-${area}-${level}`}
                 className="items-start gap-1"
               >
+                {(() => {
+                  const OptionGlyph = LEVEL_GLYPHS[level];
+                  return (
+                    <OptionGlyph
+                      className={`mt-0.5 h-3 w-3 shrink-0 ${LEVEL_TONES[level].text}`}
+                      aria-hidden="true"
+                    />
+                  );
+                })()}
                 <div className="flex flex-col">
-                  <span className={level === "yolo" ? "text-error" : ""}>
+                  <span className={LEVEL_TONES[level].text}>
                     {policyLevelLabel(area, level)}
                   </span>
                   <span className="text-2xs whitespace-normal text-description-muted">
@@ -222,7 +276,7 @@ export function PolicyControls() {
       data-testid="policy-controls"
     >
       <PresetSelect />
-      <div className="hidden flex-row items-center gap-0.5 xs:flex">
+      <div className="hidden flex-row items-center gap-1 xs:flex">
         {POLICY_AREAS.map((area) => (
           <AreaLevelSelect key={area} area={area} variant="icon" />
         ))}

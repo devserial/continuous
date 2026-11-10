@@ -26,6 +26,7 @@ import {
   getSessionLoop,
   getSessionTaskPlan,
   loadOrCreateSessionById,
+  trackSessionUsage,
   updateSessionLoop,
 } from "../session.js";
 import { savePlan } from "../tools/presentPlan.js";
@@ -148,6 +149,34 @@ describe("Loop mode's driver in the CLI", () => {
   async function planOf(...todos: string[]) {
     await savePlan({ title: "Work", plan: "The work.", todos }, cwd);
   }
+
+  it("a run that ends over its item's own budget with no report ends as over budget, not nudged and not a failure of the loop's", async () => {
+    await savePlan(
+      {
+        title: "Work",
+        plan: "The work.",
+        todos: ["One", "Two"],
+        todo_details: [{ todo: 1, budget: "10K tokens" }],
+      },
+      cwd,
+    );
+    startLoopFromPlan("normal");
+    expect(getSessionTaskPlan()?.items[0].budget).toEqual({ tokens: 10_000 });
+    const turn = nextTurn(history().length);
+    expect(turn?.kind).toBe("item");
+    append(user(turn!.prompt));
+    // The run used more than the item's budget and ended without finish_item
+    trackSessionUsage(0, {
+      promptTokens: 30_000,
+      completionTokens: 500,
+    });
+    nextTurn(history().length);
+    const item = loopNow().items.find((i) => i.id === "1")!;
+    expect(item.status).toBe("failed");
+    expect(item.overBudget).toMatchObject({ which: "tokens", limit: 10_000 });
+    expect(item.summary).toContain("Over budget");
+    expect(loopNow().consecutiveFailures ?? 0).toBe(0);
+  });
 
   it("re-plans in Plan mode, and a re-plan that adds nothing starts the next round by itself (Auto)", async () => {
     await planOf("One", "Two");

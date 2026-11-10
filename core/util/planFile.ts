@@ -338,6 +338,7 @@ function todoDetails(
       check?: unknown;
       model?: unknown;
       files?: unknown;
+      budget?: unknown;
     };
     const n = Number(d.todo);
     if (!Number.isInteger(n) || n < 1 || n > items.length) {
@@ -348,6 +349,7 @@ function todoDetails(
     if (d.check !== undefined) item.check = d.check;
     if (d.model !== undefined) item.model = d.model;
     if (d.files !== undefined) item.files = d.files;
+    if (d.budget !== undefined) item.budget = d.budget;
   }
   return undefined;
 }
@@ -544,6 +546,7 @@ export function validatePlanArgs(args: {
             check?: unknown;
             model?: unknown;
             files?: unknown;
+            budget?: unknown;
           })
         : {};
     items.push({
@@ -553,6 +556,7 @@ export function validatePlanArgs(args: {
       ...(extra.check !== undefined && { check: extra.check }),
       ...(extra.model !== undefined && { model: extra.model }),
       ...(extra.files !== undefined && { files: extra.files }),
+      ...(extra.budget !== undefined && { budget: extra.budget }),
     });
   }
   const details = todoDetails(args.todo_details, items);
@@ -783,6 +787,11 @@ export const PRESENT_PLAN_TODO_DETAILS_PARAMETER = {
         description:
           "The files this to-do changes, as paths or globs relative to the workspace; to-dos whose files do not overlap may run at the same time",
         items: { type: "string" },
+      },
+      budget: {
+        type: "string",
+        description:
+          "What this to-do may use, for example '25 turns, 200K tokens, 20 min': turns in one run, tokens and minutes over all its runs. A to-do that goes over is stopped and kept as it is. Optional",
       },
     },
   },

@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SECURITY_IGNORE_DIRS,
@@ -242,6 +245,31 @@ describe("isSecurityConcern", () => {
         const fileInDir = `${pattern}testfile.txt`;
         expect(isSecurityConcern(fileInDir)).toBe(true);
       });
+    });
+  });
+
+  describe("paths that leave the workspace", () => {
+    it("blocks a relative path that climbs out, including one that does not start with ..", () => {
+      expect(() => isSecurityConcern("../x")).not.toThrow();
+      expect(isSecurityConcern("../x")).toBe(true);
+      expect(isSecurityConcern("x/../../.config/gh/hosts.yml")).toBe(true);
+      expect(isSecurityConcern("x/../../.aws/credentials")).toBe(true);
+      expect(isSecurityConcern("src/main.js")).toBe(false);
+    });
+
+    it("follows a symlink to a file outside the workspace", () => {
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "cn-ignore-"));
+      const dir = path.join(parent, "proj");
+      fs.mkdirSync(dir);
+      try {
+        const outside = path.join(parent, "secret.txt");
+        fs.writeFileSync(outside, "k");
+        fs.symlinkSync(outside, path.join(dir, "notes"));
+        expect(isSecurityConcern("notes", dir)).toBe(true);
+        expect(isSecurityConcern("missing.js", dir)).toBe(false);
+      } finally {
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
     });
   });
 

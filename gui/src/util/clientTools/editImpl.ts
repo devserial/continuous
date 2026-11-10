@@ -1,4 +1,7 @@
-import { resolveRelativePathInDir } from "core/util/ideUtils";
+import {
+  resolveRelativePathInDir,
+  uniqueOpenFileInWorkspace,
+} from "core/util/ideUtils";
 import { v4 as uuid } from "uuid";
 import { applyForEditTool } from "../../redux/thunks/handleApplyStateUpdate";
 import { ClientToolImpl } from "./callClientTool";
@@ -24,13 +27,10 @@ export const editToolImpl: ClientToolImpl = async (
   );
 
   if (!firstUriMatch) {
-    const openFiles = await extras.ideMessenger.ide.getOpenFiles();
-    for (const uri of openFiles) {
-      if (uri.endsWith(filepath)) {
-        firstUriMatch = uri;
-        break;
-      }
-    }
+    firstUriMatch = await uniqueOpenFileInWorkspace(
+      filepath,
+      extras.ideMessenger.ide,
+    );
   }
 
   if (!firstUriMatch) {

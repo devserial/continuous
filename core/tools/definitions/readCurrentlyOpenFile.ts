@@ -1,5 +1,8 @@
+import { ToolPolicy } from "@continuedev/terminal-security";
 import { Tool } from "../..";
+import { ResolvedPath, resolveInputPath } from "../../util/pathResolver";
 import { BUILT_IN_GROUP_NAME, BuiltInToolNames } from "../builtIn";
+import { evaluateFileAccessPolicy } from "../policies/fileAccess";
 
 export const readCurrentlyOpenFileTool: Tool = {
   type: "function",
@@ -20,6 +23,21 @@ export const readCurrentlyOpenFileTool: Tool = {
     },
   },
   defaultToolPolicy: "allowedWithPermission",
+  preprocessArgs: async (_args, { ide }) => {
+    const current = await ide.getCurrentFile();
+    if (!current?.path) return { resolvedPath: null };
+    return { resolvedPath: await resolveInputPath(ide, current.path) };
+  },
+  evaluateToolCallPolicy: (
+    basePolicy: ToolPolicy,
+    _: Record<string, unknown>,
+    processedArgs?: Record<string, unknown>,
+  ): ToolPolicy => {
+    const resolvedPath = processedArgs?.resolvedPath as
+      ResolvedPath | null | undefined;
+    if (!resolvedPath) return basePolicy;
+    return evaluateFileAccessPolicy(basePolicy, resolvedPath.isWithinWorkspace);
+  },
   systemMessageDescription: {
     prefix: `To view the user's currently open file, use the ${BuiltInToolNames.ReadCurrentlyOpenFile} tool.
 If the user is asking about a file and you don't see any code, use this to check the current file`,

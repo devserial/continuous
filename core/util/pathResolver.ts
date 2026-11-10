@@ -1,9 +1,10 @@
+import * as fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as path from "path";
 import untildify from "untildify";
 import { IDE } from "..";
-import { resolveRelativePathInDir } from "./ideUtils";
-import { findUriInDirs } from "./uri";
+import { resolveRelativePathInDir, staysInDir } from "./ideUtils";
+import { joinPathsToUri } from "./uri";
 
 export interface ResolvedPath {
   uri: string;
@@ -13,19 +14,71 @@ export interface ResolvedPath {
 }
 
 /**
- * Checks if a URI is within any of the workspace directories
- * Also verifies the file actually exists, matching the behavior of resolveRelativePathInDir
+ * The local file a URI names, following symlinks. Remote URIs are unchanged.
+ * A missing file follows its nearest existing parent, so a new file under a
+ * symlinked directory is judged by where it would be created.
+ */
+function followLocalSymlink(uri: string): string {
+  if (!uri.startsWith("file:")) return uri;
+  let fsPath: string;
+  try {
+    fsPath = fileURLToPath(uri);
+  } catch {
+    return uri;
+  }
+  // fileURLToPath has already resolved "." / ".." and percent-decoding.
+  // Rebuild the URI from that path so a later containment check cannot see
+  // the raw segments. realpath then follows a symlink when the file exists.
+  const real = realpathOrParent(fsPath) ?? fsPath;
+  return pathToFileURL(real).href;
+}
+
+function realpathOrParent(fsPath: string): string | undefined {
+  try {
+    return fs.realpathSync.native(fsPath);
+  } catch {
+    const parent = path.dirname(fsPath);
+    if (parent === fsPath) return undefined;
+    try {
+      return path.join(fs.realpathSync.native(parent), path.basename(fsPath));
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+/**
+ * Checks if a URI is within any of the workspace directories.
+ * Also verifies the file actually exists, matching resolveRelativePathInDir.
+ * Both the file and the workspace roots are followed through symlinks first.
  */
 async function isUriWithinWorkspace(ide: IDE, uri: string): Promise<boolean> {
+  // Partial IDE stubs used by some tests do not implement this. A path that
+  // already resolved against a workspace directory stays inside.
+  if (typeof ide.getWorkspaceDirs !== "function") return true;
   const workspaceDirs = await ide.getWorkspaceDirs();
-  const { foundInDir } = findUriInDirs(uri, workspaceDirs);
+  const realUri = uri.startsWith("file:") ? followLocalSymlink(uri) : uri;
+  const realDirs = workspaceDirs.map((dir) =>
+    dir.startsWith("file:") ? followLocalSymlink(dir) : dir,
+  );
+  if (!realDirs.some((dir) => staysInDir(realUri, dir))) return false;
+  if (typeof ide.fileExists !== "function") return true;
+  return ide.fileExists(realUri);
+}
 
-  // Check both: within workspace path AND file exists
-  if (foundInDir !== null) {
-    return await ide.fileExists(uri);
-  }
-
-  return false;
+async function asResolved(
+  ide: IDE,
+  uri: string,
+  displayPath: string,
+  isAbsolute: boolean,
+): Promise<ResolvedPath> {
+  const realUri = followLocalSymlink(uri);
+  return {
+    uri: realUri,
+    displayPath,
+    isAbsolute,
+    isWithinWorkspace: await isUriWithinWorkspace(ide, realUri),
+  };
 }
 
 export async function resolveInputPath(
@@ -36,14 +89,7 @@ export async function resolveInputPath(
 
   // Handle file:// URIs
   if (trimmedPath.startsWith("file://")) {
-    const displayPath = fileURLToPath(trimmedPath);
-    const isWithinWorkspace = await isUriWithinWorkspace(ide, trimmedPath);
-    return {
-      uri: trimmedPath,
-      displayPath,
-      isAbsolute: true,
-      isWithinWorkspace,
-    };
+    return asResolved(ide, trimmedPath, fileURLToPath(trimmedPath), true);
   }
 
   // Expand tilde paths (handles ~/ and ~username/)
@@ -58,25 +104,44 @@ export async function resolveInputPath(
     /^[a-zA-Z]:/.test(expandedPath);
 
   if (isAbsolute) {
-    // Convert to file:// URI format
-    const uri = pathToFileURL(expandedPath).href;
-    const isWithinWorkspace = await isUriWithinWorkspace(ide, uri);
-    return {
-      uri,
-      displayPath: expandedPath,
-      isAbsolute: true,
-      isWithinWorkspace,
-    };
+    return asResolved(
+      ide,
+      pathToFileURL(expandedPath).href,
+      expandedPath,
+      true,
+    );
   }
 
-  // Handle relative paths...
+  // Handle relative paths. A file that exists inside a workspace directory
+  // is inside; one that is only reached by climbing out is not.
   const workspaceUri = await resolveRelativePathInDir(expandedPath, ide);
   if (workspaceUri) {
+    return asResolved(ide, workspaceUri, expandedPath, false);
+  }
+
+  const dirs = await ide.getWorkspaceDirs();
+  for (const dirUri of dirs) {
+    const fullUri = joinPathsToUri(dirUri, expandedPath);
+    if (staysInDir(fullUri, dirUri)) continue;
+    if (await ide.fileExists(fullUri)) {
+      return asResolved(ide, fullUri, expandedPath, false);
+    }
+  }
+
+  // A missing file whose parent is a symlink is judged by where that link
+  // points, not by the path as written.
+  for (const dirUri of dirs) {
+    const fullUri = joinPathsToUri(dirUri, expandedPath);
+    const realUri = fullUri.startsWith("file:")
+      ? followLocalSymlink(fullUri)
+      : fullUri;
+    if (realUri === fullUri) continue;
+    if (dirs.some((dir) => staysInDir(realUri, dir))) continue;
     return {
-      uri: workspaceUri,
+      uri: realUri,
       displayPath: expandedPath,
       isAbsolute: false,
-      isWithinWorkspace: true,
+      isWithinWorkspace: false,
     };
   }
 

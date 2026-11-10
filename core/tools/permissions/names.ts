@@ -102,6 +102,7 @@ export function ruleTargetsFor(
       return str(args.command) ? [args.command as string] : [];
     case BuiltInToolNames.ReadFile:
     case BuiltInToolNames.ReadFileRange:
+    case BuiltInToolNames.ReadCurrentlyOpenFile:
     case BuiltInToolNames.CodeNavigation:
     case BuiltInToolNames.CreateNewFile:
     case BuiltInToolNames.EditExistingFile:

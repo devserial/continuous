@@ -50,6 +50,27 @@ describe("PolicyControls", () => {
     expect(screen.queryByTestId("yolo-banner")).toBeNull();
   });
 
+  it("the toolbar chip is an icon whose colour and name follow the level", async () => {
+    const { store } = await setup();
+    // Defaults: context permissive (amber), tools cautious (green), edits manual (green)
+    const chip = (area: string) =>
+      screen.getAllByTestId(`policy-select-${area}`)[0];
+    expect(chip("context").className).toContain("text-warning");
+    expect(chip("tools").className).toContain("text-success");
+    expect(chip("edits").className).toContain("text-success");
+    // The level's name is there for screen readers and the tooltip, not as text
+    expect(chip("context").getAttribute("aria-label")).toBe(
+      "Context use: Permissive",
+    );
+    expect(screen.getAllByTestId("policy-level-edits")[0].className).toContain(
+      "sr-only",
+    );
+    await act(async () => {
+      store.dispatch(setPolicyLevel({ area: "tools", level: "yolo" }));
+    });
+    expect(chip("tools").className).toContain("text-error");
+  });
+
   it("each area has its own five levels, and choosing one changes only that area", async () => {
     const { user, store } = await setup();
     await user.click(screen.getAllByTestId("policy-select-tools")[0]);

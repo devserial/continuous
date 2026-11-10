@@ -88,6 +88,9 @@ describe("rule targets", () => {
     expect(ruleTargetsFor("grep_search", { query: "TODO" })).toEqual(["TODO"]);
     expect(ruleTargetsFor("ls", {})).toEqual(["."]);
     expect(ruleTargetsFor("unknown_tool", { a: 1 })).toEqual([]);
+    expect(
+      ruleTargetsFor("read_currently_open_file", {}, "/home/me/proj/.env"),
+    ).toEqual(["/home/me/proj/.env"]);
   });
 });
 

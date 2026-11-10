@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as URI from "uri-js";
 
 /** Converts any OS path to cleaned up URI path segment format with no leading/trailing slashes
@@ -16,10 +18,48 @@ export function pathToUriPathSegment(path: string) {
 }
 
 export function getCleanUriPath(uri: string) {
-  const path = URI.parse(uri).path ?? "";
-  let clean = path.replace(/^\//, ""); // remove start slash
+  const uriPath = URI.parse(uri).path ?? "";
+  let clean = uriPath.replace(/^\//, ""); // remove start slash
   clean = clean.replace(/\/$/, ""); // remove end slash
   return clean;
+}
+
+/**
+ * Path segments of a URI after percent-decoding and resolving `.` and `..`.
+ * Workspace checks use this so `file:///proj/../other/x` is not treated as a
+ * file inside `proj`.
+ */
+export function normalizedUriPathParts(uri: string): string[] {
+  const comps = URI.parse(uri);
+  if (comps.scheme === "file") {
+    try {
+      // fileURLToPath percent-decodes and resolves dot segments.
+      return path
+        .normalize(fileURLToPath(uri))
+        .split(/[/\\]/)
+        .filter((part) => part !== "");
+    } catch {
+      // Not a file URL this platform accepts; fall through.
+    }
+  }
+  const raw = (comps.path ?? "").replace(/\\/g, "/");
+  const stack: string[] = [];
+  for (const seg of raw.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    let decoded = seg;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      // Keep a segment that is not valid percent-encoding.
+    }
+    if (decoded === "" || decoded === ".") continue;
+    if (decoded === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") stack.pop();
+      continue;
+    }
+    stack.push(decoded);
+  }
+  return stack;
 }
 
 export function findUriInDirs(
@@ -34,7 +74,7 @@ export function findUriInDirs(
   if (!uriComps.scheme) {
     throw new Error(`Invalid uri: ${uri}`);
   }
-  const uriPathParts = getCleanUriPath(uri).split("/");
+  const uriPathParts = normalizedUriPathParts(uri);
 
   for (const dir of dirUriCandidates) {
     const dirComps = URI.parse(dir);
@@ -49,8 +89,9 @@ export function findUriInDirs(
     // Can't just use startsWith because e.g.
     // file:///folder/file is not within file:///fold
 
-    // At this point we break the path up and check if each dir path part matches
-    const dirPathParts = getCleanUriPath(dir).split("/");
+    // Compare resolved segments, not the raw URI text, so ".." and
+    // percent-encoded dot segments cannot pretend to stay inside a directory.
+    const dirPathParts = normalizedUriPathParts(dir);
 
     if (uriPathParts.length < dirPathParts.length) {
       continue;
@@ -62,10 +103,7 @@ export function findUriInDirs(
       }
     }
     if (allDirPartsMatch) {
-      const relativePath = uriPathParts
-        .slice(dirPathParts.length)
-        .map(decodeURIComponent)
-        .join("/");
+      const relativePath = uriPathParts.slice(dirPathParts.length).join("/");
       return {
         uri,
         relativePathOrBasename: relativePath,

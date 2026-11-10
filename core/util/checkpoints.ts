@@ -3,6 +3,7 @@ import { BuiltInToolNames } from "../tools/builtIn";
 import {
   inferResolvedUriFromRelativePath,
   resolveRelativePathInDir,
+  uniqueOpenFileInWorkspace,
 } from "./ideUtils";
 
 /*
@@ -65,10 +66,9 @@ export async function resolveCheckpointTargets(
     if (resolved) {
       return [resolved];
     }
-    for (const uri of await ide.getOpenFiles()) {
-      if (uri.endsWith(filepath)) {
-        return [uri];
-      }
+    const open = await uniqueOpenFileInWorkspace(filepath, ide);
+    if (open) {
+      return [open];
     }
   } catch (e) {
     console.warn("Failed to resolve checkpoint target", e);

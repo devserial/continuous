@@ -764,7 +764,11 @@ export const advanceLoop = createAsyncThunk<void, undefined, ThunkApiType>(
       const check = state.session.taskPlan?.items.find(
         (t) => t.id === itemId,
       )?.check;
-      loop = finishItemRun(loop, loop.current.report, { check });
+      loop = finishItemRun(loop, loop.current.report, {
+        check,
+        sessionTokens: sessionTokens(state),
+        now: new Date(),
+      });
       loop = settleSteeredAnswers(loop, delivered);
       if (itemId) loop = releaseEmptyWait(loop, itemId);
     } else if (loop.current?.kind === "check") {
@@ -871,7 +875,7 @@ export const advanceLoop = createAsyncThunk<void, undefined, ThunkApiType>(
           action.itemId,
           state.session.history.length,
           now,
-          { model: chosen.record },
+          { model: chosen.record, sessionTokens: sessionTokens(getState()) },
         );
         // An own model leaves the loop model; the next turn comes back to it
         const leaves =

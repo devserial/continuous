@@ -1,3 +1,4 @@
+import fs from "fs";
 import ignore from "ignore";
 
 import path from "path";
@@ -237,23 +238,77 @@ export const defaultIgnoreFileAndDir = ignore()
   .add(defaultIgnoreFile)
   .add(defaultIgnoreDir);
 
-export function isSecurityConcern(filePathOrUri: string) {
+function isAbsolutePath(p: string): boolean {
+  return path.isAbsolute(p) || path.win32.isAbsolute(p) || p.startsWith("\\\\");
+}
+
+/** True when `target` is `root` or a file inside it. */
+function isInsideDir(root: string, target: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  if (rel === "") return true;
+  if (path.isAbsolute(rel)) return false;
+  return (
+    rel !== ".." && !rel.startsWith(`..${path.sep}`) && !rel.startsWith("../")
+  );
+}
+
+function patternHit(p: string): boolean {
+  const normalized = p.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (
+    !normalized ||
+    normalized.split("/").includes("..") ||
+    isAbsolutePath(normalized)
+  ) {
+    return false;
+  }
+  try {
+    return defaultFileAndFolderSecurityIgnores.ignores(normalized);
+  } catch {
+    // The ignore library rejects some paths. Those are treated as a concern.
+    return true;
+  }
+}
+
+/**
+ * A secret file, or a relative path that leaves `workspaceRoot` (the working
+ * directory when omitted). The path is resolved, and a symlink is followed,
+ * before either check.
+ */
+export function isSecurityConcern(
+  filePathOrUri: string,
+  workspaceRoot?: string,
+): boolean {
   if (!filePathOrUri) {
     return false;
   }
   let filepath = filePathOrUri;
+  const wasFileUri = filePathOrUri.startsWith("file:");
+  if (wasFileUri) {
+    try {
+      filepath = fileURLToPath(filePathOrUri);
+    } catch {
+      // Not a file URI this platform accepts.
+    }
+  }
+
+  const root = path.resolve(workspaceRoot ?? process.cwd());
+  const relativeInput = !wasFileUri && !isAbsolutePath(filepath);
+  let resolved = relativeInput
+    ? path.resolve(root, filepath)
+    : path.resolve(filepath);
   try {
-    filepath = fileURLToPath(filePathOrUri);
-  } catch {}
-  if (path.isAbsolute(filepath)) {
-    const dir = path.dirname(filepath).split(/\/|\\/).at(-1) ?? "";
-    const basename = path.basename(filepath);
-    filepath = `${dir ? dir + "/" : ""}${basename}`;
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // The file is not there; the normalized path is enough.
   }
-  if (!filepath) {
-    return false;
-  }
-  return defaultFileAndFolderSecurityIgnores.ignores(filepath);
+
+  if (relativeInput && !isInsideDir(root, resolved)) return true;
+
+  if (relativeInput && patternHit(filepath)) return true;
+  const dir = path.dirname(resolved).split(/[/\\]/).at(-1) ?? "";
+  const basename = path.basename(resolved);
+  const tail = `${dir ? dir + "/" : ""}${basename}`;
+  return patternHit(tail);
 }
 
 export function throwIfFileIsSecurityConcern(filepath: string) {

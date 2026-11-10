@@ -3,6 +3,7 @@ import { execSync, fork } from "child_process";
 import type { LoopReminder, LoopState, TaskItem } from "core/index.js";
 import {
   finishParallelRun,
+  loopTokensFromUsage,
   runItemInline,
   startParallelRun,
 } from "core/util/loopMode.js";
@@ -337,6 +338,7 @@ async function settleRun(
       questions: output.questions,
       mergeFailed,
       error: output.error,
+      tokens: loopTokensFromUsage(output.usage),
     },
     new Date(),
     { check: entry.item.check },

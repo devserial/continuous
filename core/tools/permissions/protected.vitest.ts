@@ -29,6 +29,24 @@ describe("normalizeProtectedPath", () => {
     expect(normalizeProtectedPath("src\\..\\.env", HOME)).toBe(".env");
   });
 
+  it("strips Windows trailing dots, spaces and alternate streams", () => {
+    expect(normalizeProtectedPath(".env.", HOME)).toBe(".env");
+    expect(normalizeProtectedPath(".env ", HOME)).toBe(".env");
+    expect(normalizeProtectedPath(".env::$DATA", HOME)).toBe(".env");
+    expect(normalizeProtectedPath(".git./hooks/pre-commit", HOME)).toBe(
+      ".git/hooks/pre-commit",
+    );
+    expect(hit(".env.")).toBe("secret");
+    expect(hit(".env::$DATA")).toBe("secret");
+    expect(hit(".git./hooks/pre-commit")).toBe("config");
+    expect(hit("C:\\Users\\me\\.env.")).toBe("secret");
+  });
+
+  it("treats an 8.3 short name in a path as protected, but not a git revision", () => {
+    expect(hit("GITHUB~1/workflows/x.yml")).toBe("secret");
+    expect(hit("HEAD~1")).toBeUndefined();
+  });
+
   it("treats a file URI's /C:/ path like a drive path", () => {
     expect(normalizeProtectedPath("/C:/Users/me/.aws/credentials", HOME)).toBe(
       "~/.aws/credentials",
@@ -39,6 +57,56 @@ describe("normalizeProtectedPath", () => {
   it("does not treat another user's home as ours", () => {
     expect(normalizeProtectedPath("C:\\Users\\meagan\\x", HOME)).toBe(
       "C:/Users/meagan/x",
+    );
+  });
+
+  it("resolves a relative path against the working directory", () => {
+    const home = "/home/u";
+    expect(
+      normalizeProtectedPath("../.aws/credentials", home, "/home/u/proj"),
+    ).toBe("~/.aws/credentials");
+    expect(
+      normalizeProtectedPath(
+        "..\\..\\.config\\gh\\hosts.yml",
+        home,
+        "/home/u/proj/pkg",
+      ),
+    ).toBe("~/.config/gh/hosts.yml");
+    expect(hit("../.aws/credentials")).toBeUndefined();
+  });
+
+  it("folds .. and a proc root before comparing to the home directory", () => {
+    const home = "/home/u";
+    expect(
+      normalizeProtectedPath("/home/../home/u/.config/gh/hosts.yml", home),
+    ).toBe("~/.config/gh/hosts.yml");
+    expect(
+      normalizeProtectedPath("/proc/self/root/home/u/.aws/credentials", home),
+    ).toBe("~/.aws/credentials");
+    expect(
+      normalizeProtectedPath("/proc/42/root/home/u/.ssh/config", home),
+    ).toBe("~/.ssh/config");
+  });
+
+  it("treats a WSL /mnt drive path as the Windows path", () => {
+    expect(
+      normalizeProtectedPath("/mnt/c/Users/me/.aws/credentials", HOME),
+    ).toBe("~/.aws/credentials");
+    expect(hit("/mnt/c/users/me/.config/gh/hosts.yml")).toBe("secret");
+    expect(hit("/mnt/c/users/me/.kube/config")).toBe("secret");
+    expect(hit("/home/someone/.config/gh/hosts.yml")).toBe("secret");
+    expect(normalizeProtectedPath("/mnt/cdrom/file", HOME)).toBe(
+      "/mnt/cdrom/file",
+    );
+    expect(hit("/mnt/cdrom/file")).toBeUndefined();
+  });
+
+  it("expands ~user next to the home directory", () => {
+    expect(normalizeProtectedPath("~u/.aws/credentials", "/home/u")).toBe(
+      "~/.aws/credentials",
+    );
+    expect(normalizeProtectedPath("~other/.ssh/id_rsa", "/home/u")).toBe(
+      "/home/other/.ssh/id_rsa",
     );
   });
 });

@@ -65,6 +65,19 @@ describe("protected paths work with no rules at all", () => {
     expect(run("cat ~/.aws/credentials").policy).toBe(ASK);
   });
 
+  it("a relative path is resolved against the working directory", () => {
+    const r = evaluateToolPolicyWithRules({
+      tool: terminalTool as any,
+      toolName: "run_terminal_command",
+      basePolicy: ALLOW,
+      parsedArgs: { command: "cat ../.aws/credentials" },
+      permissions: undefined,
+      cwd: "/home/u/proj",
+    });
+    expect(r).toMatchObject({ policy: ASK, source: "protected-path" });
+    expect(run("cat ../.aws/credentials").policy).toBe(ALLOW);
+  });
+
   it("the resolved path is checked too, so a link name does not hide a secret", () => {
     const r = read("notes.txt", undefined, "file:///home/me/proj/.env");
     expect(r.policy).toBe(ASK);

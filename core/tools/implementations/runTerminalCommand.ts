@@ -64,13 +64,12 @@ function getDecodedOutput(data: Buffer): string {
   }
 } // Simple helper function to use login shell on Unix/macOS and PowerShell on Windows
 function getShellCommand(command: string): { shell: string; args: string[] } {
-  // Windows PowerShell on Windows, the login shell elsewhere (resolveShell)
-  const shell = resolveShell();
-  return { shell: shell.executable, args: shell.args(command) };
+  // Windows PowerShell on Windows, the login shell elsewhere, or bash in WSL
+  return getCommandExecutor().invocation(command);
 }
 
 import { fileURLToPath } from "node:url";
-import { resolveShell } from "../../util/shell";
+import { getCommandExecutor } from "../../util/commandExecutor";
 import { commandLintGate } from "../permissions/commandLint";
 import { ToolImpl } from ".";
 import {
@@ -141,6 +140,15 @@ const getColorEnv = () => ({
 // integrated terminal and executes in the correct remote environment.
 const LOCAL_ONLY = ["", "local"];
 
+/**
+ * Why a command is not run: the place it should run in is not there (WSL asked
+ * for and not installed, which never falls back to the host), or the lint.
+ */
+function commandBlocked(command: string): string | undefined {
+  const executor = getCommandExecutor();
+  return executor.unavailable ?? commandLintGate(command, executor.shell.kind);
+}
+
 /** The result of a command the lint stopped: nothing ran. */
 function commandNotRun(message: string) {
   return [
@@ -163,7 +171,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
   const toolCallId = extras.toolCallId || "";
 
   // Mistakes in how the command is written, before the shell reports them
-  const lintMessage = commandLintGate(command, resolveShell().kind);
+  const lintMessage = commandBlocked(command);
   if (lintMessage) {
     return commandNotRun(lintMessage);
   }

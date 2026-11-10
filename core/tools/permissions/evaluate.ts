@@ -98,6 +98,7 @@ export function evaluateToolPolicyWithRules(
     parsedArgs,
     resolvedPath,
     skip: skippedProtections(input.approval),
+    cwd: input.cwd,
   });
 
   // The floor: deny rules the person wrote to bind even at YOLO

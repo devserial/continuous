@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   getTerminalShellPreference,
@@ -166,6 +168,18 @@ echo héllo ✓`;
       kind: "wsl",
       distro: "Debian",
     });
+  });
+
+  it("the editor settings are machine settings, so a workspace cannot switch the shell", () => {
+    const pkgPath = [
+      path.resolve(process.cwd(), "extensions/vscode/package.json"),
+      path.resolve(process.cwd(), "../extensions/vscode/package.json"),
+    ].find((candidate) => existsSync(candidate));
+    if (!pkgPath) throw new Error("vscode package.json not found");
+    const props = JSON.parse(readFileSync(pkgPath, "utf8")).contributes
+      .configuration.properties;
+    expect(props["continuous.terminal.shell"].scope).toBe("machine");
+    expect(props["continuous.terminal.wslDistro"].scope).toBe("machine");
   });
 
   it("changes nothing off Windows", () => {

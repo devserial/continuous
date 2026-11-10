@@ -88,6 +88,49 @@ const SYSTEM_SECRET = [
 
 const ENV_TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
 
+/**
+ * Win32 ignores trailing dots and spaces on each segment, and `name:stream`
+ * (an alternate data stream) is the same file as `name`. `.` and `..` are kept
+ * so a relative path can still be resolved afterwards.
+ */
+export function stripWindowsPathAliases(p: string): string {
+  const drive = /^[a-zA-Z]:/.test(p) ? p.slice(0, 2) : "";
+  let rest = drive ? p.slice(2) : p;
+  const colon = rest.indexOf(":");
+  if (colon >= 0) rest = rest.slice(0, colon);
+  return (drive + rest)
+    .split("/")
+    .map((seg) =>
+      seg === "." || seg === ".." ? seg : seg.replace(/[. ]+$/g, ""),
+    )
+    .join("/");
+}
+
+/** An 8.3 short name (`GITHUB~1`) inside a path. A bare `HEAD~1` has no slash. */
+const WINDOWS_SHORT_NAME = /^[A-Za-z0-9_$]{1,6}~[0-9](?:\.[A-Za-z0-9]{1,3})?$/;
+
+export function hasWindowsShortName(p: string): boolean {
+  if (!p.includes("/")) return false;
+  return p.split("/").some((seg) => WINDOWS_SHORT_NAME.test(seg));
+}
+
+/**
+ * Path under a home directory: `~`, `/home/<user>`, `/Users/<user>`, or
+ * `<drive>:/Users/<user>` (including a WSL `/mnt/<drive>` path after it is
+ * rewritten to a drive path). The lists then apply to that relative path.
+ */
+function homeRelative(segs: string[]): string[] | undefined {
+  const low = segs.map((s) => s.toLowerCase());
+  if (low[0] === "~" && low.length >= 2) return low.slice(1);
+  if ((low[0] === "home" || low[0] === "users") && low.length >= 3) {
+    return low.slice(2);
+  }
+  if (/^[a-z]:$/.test(low[0] ?? "") && low[1] === "users" && low.length >= 4) {
+    return low.slice(3);
+  }
+  return undefined;
+}
+
 /** True for `.env`, `.env.local`, `prod.env`; false for `.env.example` and `.environment`. */
 function isEnvFile(base: string): boolean {
   if (ENV_TEMPLATE.test(base)) return false;
@@ -103,8 +146,8 @@ export function isSecretPath(p: string): boolean {
   const dot = base.lastIndexOf(".");
   if (dot > 0 && SECRET_EXTENSIONS.has(base.slice(dot))) return true;
   if (SYSTEM_SECRET.some((re) => re.test(p))) return true;
-  if (segs[0] !== "~" || segs.length < 2) return false;
-  const rest = segs.slice(1).map((s) => s.toLowerCase());
+  const rest = homeRelative(segs);
+  if (!rest) return false;
   if (HOME_SECRET_FILES.has(rest.join("/"))) return true;
   for (const dir of HOME_SECRET_DIRS) {
     const d = dir.split("/");

@@ -16,12 +16,12 @@ import {
 const WS = "file:///ws";
 
 /** Minimal in-memory IDE: just the file operations checkpoints rely on. */
-function makeIde(initial: Record<string, string> = {}) {
+function makeIde(initial: Record<string, string> = {}, open: string[] = []) {
   const files = new Map(Object.entries(initial));
   const ide = {
     files,
     getWorkspaceDirs: async () => [WS],
-    getOpenFiles: async () => [] as string[],
+    getOpenFiles: async () => open,
     getCurrentFile: async () => undefined,
     fileExists: async (u: string) => files.has(u),
     readFile: async (u: string) => {
@@ -117,6 +117,58 @@ describe("resolveCheckpointTargets", () => {
         BuiltInToolNames.MultiEdit,
         { filepath: "missing.ts" },
         ide,
+      ),
+    ).toEqual([]);
+  });
+
+  it("uses one open workspace file and ignores a suffix outside the workspace", async () => {
+    const ide = makeIde({}, [
+      "file:///home/u/.bashrc",
+      `${WS}/src/a.ts`,
+      `${WS}/src/data.ts`,
+    ]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: "a.ts" },
+        ide,
+      ),
+    ).toEqual([`${WS}/src/a.ts`]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: "bashrc" },
+        ide,
+      ),
+    ).toEqual([]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: "rc" },
+        ide,
+      ),
+    ).toEqual([]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: ".bashrc" },
+        ide,
+      ),
+    ).toEqual([]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: "data.ts" },
+        ide,
+      ),
+    ).toEqual([`${WS}/src/data.ts`]);
+
+    const two = makeIde({}, [`${WS}/src/a.ts`, `${WS}/lib/a.ts`]);
+    expect(
+      await resolveCheckpointTargets(
+        BuiltInToolNames.EditExistingFile,
+        { filepath: "a.ts" },
+        two,
       ),
     ).toEqual([]);
   });
