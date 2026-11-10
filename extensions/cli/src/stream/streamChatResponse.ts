@@ -8,7 +8,6 @@ import {
   TURN_NUDGE_LIMIT,
   TURN_NUDGE_TOTAL,
 } from "core/util/turnEnd.js";
-import * as dotenv from "dotenv";
 import type { ChatCompletionTool } from "openai/resources.mjs";
 
 import { pruneLastMessage } from "../compaction.js";
@@ -55,8 +54,6 @@ import {
 } from "./streamChatResponse.helpers.js";
 import { StreamCallbacks } from "./streamChatResponse.types.js";
 import { taskListBlockForRequest } from "./taskListBlock.js";
-
-dotenv.config();
 
 function updateFinalResponse(
   content: string,

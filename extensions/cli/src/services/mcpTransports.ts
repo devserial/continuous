@@ -9,6 +9,8 @@ import {
   StdioMcpServer,
 } from "node_modules/@continuedev/config-yaml/dist/schemas/mcp/index.js";
 
+import { mcpStdioEnv } from "../childEnv.js";
+
 import { MCPConnectionInfo } from "./types.js";
 
 export function constructSseTransport(
@@ -74,14 +76,7 @@ export function constructStdioTransport(
   serverConfig: StdioMcpServer,
   connection: MCPConnectionInfo,
 ): StdioClientTransport {
-  const env: Record<string, string> = serverConfig.env || {};
-  if (process.env) {
-    for (const [key, value] of Object.entries(process.env)) {
-      if (!(key in env) && !!value) {
-        env[key] = value;
-      }
-    }
-  }
+  const env = mcpStdioEnv(serverConfig.env);
 
   const transport = new StdioClientTransport({
     command: serverConfig.command,

@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from "child_process";
 
+import { shellChildEnv } from "../childEnv.js";
 import { logger } from "../util/logger.js";
 
 export type BackgroundJobStatus =
@@ -61,7 +62,10 @@ export class BackgroundJobService {
 
     job.status = "running";
 
-    const child = spawn(shell, args, { stdio: "pipe" });
+    const child = spawn(shell, args, {
+      stdio: "pipe",
+      env: shellChildEnv(),
+    });
     this.processes.set(jobId, child);
 
     child.stdout?.setEncoding("utf8");

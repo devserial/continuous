@@ -9,15 +9,12 @@
  * asks again.
  *
  * Two things a repository must not be able to influence:
- * - Where the user-level settings and the trust record live. The CLI loads a
- *   `.env` from the working directory (see env.ts), and dotenv fills in any
- *   variable that is not already set. CONTINUE_GLOBAL_DIR is normally unset,
- *   so a repository could point it at its own directory and pass its settings
- *   off as the user's. A global directory inside the project is refused.
- *   (HOME and USERPROFILE are always set, so dotenv leaves them alone.)
+ * - Where the user-level settings and the trust record live. The CLI does not
+ *   load a working-directory .env into this process (see env.ts).
+ *   CONTINUE_GLOBAL_DIR can still arrive in the environment the process was
+ *   started with. A global directory inside the project is refused.
  * - The decision to trust. There is deliberately no environment variable for
- *   it, for the same reason. Only --trust-project-hooks and `cn hooks trust`
- *   grant it.
+ *   it. Only --trust-project-hooks and `cn hooks trust` grant it.
  */
 
 import * as crypto from "crypto";

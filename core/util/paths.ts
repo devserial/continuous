@@ -14,7 +14,11 @@ import { defaultConfig } from "../config/default";
 import Types from "../config/types";
 import { editYamlText } from "./yamlEdit";
 
-dotenv.config();
+// The CLI sets this before importing core so a working-directory .env is not
+// copied into the process. Secrets are read with dotenv.parse instead.
+if (process.env.CONTINUOUS_IGNORE_CWD_ENV !== "1") {
+  dotenv.config();
+}
 
 export function setConfigFilePermissions(filePath: string): void {
   try {

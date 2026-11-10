@@ -1,3 +1,7 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { setTerminalShellPreference } from "core/util/shell.js";
 
 import {
@@ -71,6 +75,33 @@ describe("runTerminalCommandTool", () => {
   });
 
   describe("basic platform-specific terminal execution", () => {
+    it.skipIf(process.platform === "win32" || !fs.existsSync("/bin/bash"))(
+      "does not source a shell startup file named after the process started",
+      async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cn-bash-tool-"));
+        const marker = path.join(dir, "marker");
+        const script = path.join(dir, "setup.sh");
+        fs.writeFileSync(script, `echo ran > '${marker}'\n`);
+        const previousBash = process.env.BASH_ENV;
+        const previousShell = process.env.SHELL;
+        process.env.BASH_ENV = script;
+        process.env.SHELL = "/bin/bash";
+        try {
+          const result = await runTerminalCommandTool.run({
+            command: "echo done",
+          });
+          expect(result).toContain("done");
+          expect(fs.existsSync(marker)).toBe(false);
+        } finally {
+          if (previousBash === undefined) delete process.env.BASH_ENV;
+          else process.env.BASH_ENV = previousBash;
+          if (previousShell === undefined) delete process.env.SHELL;
+          else process.env.SHELL = previousShell;
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
+
     it("should execute a simple echo command", async () => {
       let command: string;
       let expectedOutput: string;

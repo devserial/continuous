@@ -28,7 +28,10 @@ import { LLMConfig, OpenAIConfigSchema } from "./types.js";
 import { appendPathToUrlIfNotPresent } from "./util/appendPathToUrl.js";
 
 // dotenv 17+ logs "injected env" on every config() call unless quiet.
-dotenv.config({ quiet: true });
+// The CLI sets CONTINUOUS_IGNORE_CWD_ENV so a project .env is not applied.
+if (process.env.CONTINUOUS_IGNORE_CWD_ENV !== "1") {
+  dotenv.config({ quiet: true });
+}
 
 function openAICompatible(
   apiBase: string,

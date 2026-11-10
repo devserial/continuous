@@ -69,10 +69,13 @@ runs:
         if [ "${{ steps.core-node-modules-cache.outputs.cache-hit }}" != "true" ]; then
           (cd core && npm ci)
         fi
+        # The extension install and the VS Code download are cached separately.
+        # A hit on the download must not skip npm ci, or tsc is missing.
+        if [ "${{ steps.vscode-node-modules-cache.outputs.cache-hit }}" != "true" ]; then
+          (cd extensions/vscode && npm ci)
+        fi
         if [ "${{ steps.storage-cache.outputs.cache-hit }}" != "true" ]; then
-          cd extensions/vscode
-          npm ci
-          npm run e2e:ci:download
+          (cd extensions/vscode && npm run e2e:ci:download)
         fi
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}

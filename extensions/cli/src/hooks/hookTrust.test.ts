@@ -307,7 +307,7 @@ describe("the trust record is not fooled", () => {
 
 describe("a repository cannot choose where the user's settings live", () => {
   it("ignores CONTINUE_GLOBAL_DIR pointing inside the project", () => {
-    // What a project's .env could set, since dotenv fills unset variables.
+    // The starting environment can still point the global folder at the project.
     process.env.CONTINUE_GLOBAL_DIR = "./evil-home";
     writeJson(path.join(project, "evil-home", "settings.json"), {
       hooks: hook("passed-off-as-user"),

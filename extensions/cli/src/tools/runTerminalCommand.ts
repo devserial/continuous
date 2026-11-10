@@ -8,6 +8,7 @@ import {
 import { commandLintGate } from "core/tools/permissions/commandLint.js";
 import { getTerminalShellPreference, resolveShell } from "core/util/shell.js";
 
+import { shellChildEnv } from "../childEnv.js";
 import { backgroundJobService } from "../services/BackgroundJobService.js";
 import { services } from "../services/index.js";
 import { telemetryService } from "../telemetry/telemetryService.js";
@@ -207,7 +208,7 @@ IMPORTANT: To edit files, use Edit/MultiEdit tools instead of bash commands (sed
     const terminalOutput: string = await new Promise((resolve, reject) => {
       // Use same shell logic as core implementation
       const { shell, args } = getShellCommand(command);
-      const child = spawn(shell, args);
+      const child = spawn(shell, args, { env: shellChildEnv() });
       let stdout = "";
       let stderr = "";
       let timeoutId: NodeJS.Timeout;

@@ -1,7 +1,10 @@
 /**
- * Early initialization that must happen before ANY other imports
- * This file intercepts console and stdout/stderr to prevent dependency logging
+ * Early initialization that must happen before ANY other imports.
+ * startupEnv.ts records the process environment and refuses a
+ * working-directory .env before any other module can load one.
+ * This file then intercepts console and stdout/stderr to prevent dependency logging.
  */
+import "./startupEnv.js";
 
 import { isHeadlessMode as checkIsHeadlessMode } from "./util/cli.js";
 
