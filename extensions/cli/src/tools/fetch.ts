@@ -1,4 +1,5 @@
 import type { ContextItem } from "core/index.js";
+import { fetchUrlContentTool } from "core/tools/definitions/fetchUrlContent.js";
 import { fetchUrlContentImpl } from "core/tools/implementations/fetchUrlContent.js";
 import { ContinueError, ContinueErrorReason } from "core/util/errors.js";
 
@@ -36,7 +37,12 @@ export const fetchTool: Tool = {
   },
   readonly: true,
   isBuiltIn: true,
+  evaluateToolCallPolicy: (basePolicy, args) =>
+    fetchUrlContentTool.evaluateToolCallPolicy?.(basePolicy, args) ??
+    basePolicy,
   preprocess: async (args) => {
+    // Resolve before the permission check so a private address asks.
+    await fetchUrlContentTool.preprocessArgs?.(args, { ide: {} as never });
     return {
       preview: [
         {

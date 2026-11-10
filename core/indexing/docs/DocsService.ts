@@ -548,7 +548,8 @@ export default class DocsService {
         this.config,
         maxDepth,
         undefined,
-        useLocalCrawling,
+        // Unset means crawl on this machine. false opts into the upstream service.
+        useLocalCrawling !== false,
         this.githubToken,
       );
       const crawlerGen = docsCrawler.crawl(new URL(startUrl));

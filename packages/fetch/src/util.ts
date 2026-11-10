@@ -1,4 +1,5 @@
 import { RequestOptions } from "@continuedev/config-types";
+import { BlockList, isIP } from "node:net";
 
 /**
  * Gets the proxy settings from environment variables
@@ -50,42 +51,73 @@ export function getReqOptionsNoProxyPatterns(
   );
 }
 
+/** Split `host:port` without treating an IPv6 address or a CIDR prefix as a port. */
+function splitHostPort(value: string): [string, string | undefined] {
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end !== -1) {
+      const host = value.slice(1, end);
+      const rest = value.slice(end + 1);
+      return [host, rest.startsWith(":") ? rest.slice(1) : undefined];
+    }
+  }
+  if (value.includes("/")) return [value, undefined];
+  const colon = value.lastIndexOf(":");
+  if (colon === -1 || value.indexOf(":") !== colon) return [value, undefined];
+  return [value.slice(0, colon), value.slice(colon + 1)];
+}
+
+function cidrMatches(hostname: string, pattern: string): boolean {
+  const slash = pattern.lastIndexOf("/");
+  if (slash <= 0) return false;
+  const network = pattern.slice(0, slash);
+  const bits = Number(pattern.slice(slash + 1));
+  const family = isIP(network);
+  if (!family || !Number.isInteger(bits) || isIP(hostname) !== family) {
+    return false;
+  }
+  const block = new BlockList();
+  try {
+    block.addSubnet(network, bits, family === 4 ? "ipv4" : "ipv6");
+  } catch {
+    return false;
+  }
+  return block.check(hostname, family === 4 ? "ipv4" : "ipv6");
+}
+
 export function patternMatchesHostname(hostname: string, pattern: string) {
-  // Split hostname and pattern to separate hostname and port
-  const [hostnameWithoutPort, hostnamePort] = hostname.toLowerCase().split(":");
-  const [patternWithoutPort, patternPort] = pattern.toLowerCase().split(":");
+  const [hostnameWithoutPort, hostnamePort] = splitHostPort(
+    hostname.toLowerCase(),
+  );
+  const [patternWithoutPort, patternPort] = splitHostPort(
+    pattern.toLowerCase(),
+  );
 
   // If pattern specifies a port but hostname doesn't match it, no match
   if (patternPort && (!hostnamePort || hostnamePort !== patternPort)) {
     return false;
   }
 
-  // Now compare just the hostname parts
+  if (patternWithoutPort === "*") return true;
 
-  // exact match
-  if (patternWithoutPort === hostnameWithoutPort) {
-    return true;
-  }
-  // wildcard domain match (*.example.com)
-  if (
-    patternWithoutPort.startsWith("*.") &&
-    hostnameWithoutPort.endsWith(patternWithoutPort.substring(1))
-  ) {
-    return true;
-  }
-  // Domain suffix match (.example.com)
-  if (
-    patternWithoutPort.startsWith(".") &&
-    hostnameWithoutPort.endsWith(patternWithoutPort.slice(1))
-  ) {
-    return true;
+  if (cidrMatches(hostnameWithoutPort, patternWithoutPort)) return true;
+
+  // *.example.com matches a subdomain, not the apex.
+  if (patternWithoutPort.startsWith("*.")) {
+    const suffix = patternWithoutPort.slice(1);
+    return (
+      hostnameWithoutPort.length > suffix.length &&
+      hostnameWithoutPort.endsWith(suffix)
+    );
   }
 
-  // TODO IP address ranges
-
-  // TODO CIDR notation
-
-  return false;
+  // A bare domain and a leading-dot domain are the same suffix match, and the
+  // boundary is a dot: `.corp.example.com` does not match `evilcorp.example.com`.
+  const domain = patternWithoutPort.replace(/^\.+/, "");
+  if (!domain || domain.includes("*")) return false;
+  return (
+    hostnameWithoutPort === domain || hostnameWithoutPort.endsWith("." + domain)
+  );
 }
 
 /**

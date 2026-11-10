@@ -24,7 +24,7 @@ class DocsCrawler {
     private readonly config: ContinueConfig,
     private readonly maxDepth: number = 4,
     private readonly maxRequestsPerCrawl: number = 1000,
-    private readonly useLocalCrawling: boolean = false,
+    private readonly useLocalCrawling: boolean = true,
     private readonly githubToken: string | undefined = undefined,
   ) {
     this.chromiumInstaller = new ChromiumInstaller(this.ide, this.config);
@@ -48,6 +48,8 @@ class DocsCrawler {
       return "github";
     }
 
+    // The upstream crawl service receives the page URL. It runs only when a
+    // site explicitly sets useLocalCrawling: false.
     if (!this.useLocalCrawling) {
       try {
         const pageData = await new DefaultCrawler(

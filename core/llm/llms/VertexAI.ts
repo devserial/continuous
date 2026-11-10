@@ -42,7 +42,7 @@ class VertexAI extends BaseLLM {
       Vertex Supports 3 different URL formats 
       1. Standard VertexAI: e.g. https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent
       2. Tuned model:       e.g. https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/{endpoint}:streamGenerateContent
-      3. Express mode:      e.g. https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent?key={API_KEY} // see https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      3. Express mode:      e.g. https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:streamGenerateContent with header x-goog-api-key // see https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
 
       Authentication can be done using the following
       2. Access token obtained using Google Auth client, passed to endpoint that includes full model path with project id and region
@@ -190,7 +190,8 @@ class VertexAI extends BaseLLM {
       "Content-Type": "application/json",
     };
     if (this.apiKey) {
-      url.searchParams.set("key", this.apiKey);
+      // The key stays in a header so it is not written into the URL.
+      headers["x-goog-api-key"] = this.apiKey;
     } else {
       const client = await this.clientPromise;
       const result = await client?.getAccessToken();

@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "node:path";
 import { URL } from "node:url";
 
 import { Handler, HTTPResponse, Page } from "puppeteer";
@@ -8,11 +9,13 @@ import { Handler, HTTPResponse, Page } from "puppeteer";
 import PCR from "puppeteer-chromium-resolver";
 
 import { ContinueConfig, IDE } from "../../..";
+import { resolvesToNonPublic } from "../../../util/networkAddress";
 import {
   editConfigFile,
   getChromiumPath,
   getContinueUtilsPath,
 } from "../../../util/paths";
+import { chromiumBuildFor, downloadVerifiedChromium } from "./chromiumDownload";
 import { PageData } from "./DocsCrawler";
 
 export class ChromiumCrawler {
@@ -43,7 +46,27 @@ export class ChromiumCrawler {
       `[${(this.constructor as any).name}] Crawling site: ${this.startUrl}`,
     );
 
-    const stats = await PCR(ChromiumInstaller.PCR_CONFIG);
+    if (await resolvesToNonPublic(this.startUrl.hostname)) {
+      console.debug(
+        "Refusing to render a non-public documentation host in Chromium",
+      );
+      return;
+    }
+
+    const executablePath = await downloadVerifiedChromium(
+      ChromiumInstaller.PCR_CONFIG.downloadPath,
+    );
+    const stats = await PCR({
+      ...ChromiumInstaller.PCR_CONFIG,
+      revision: chromiumBuildFor().revision,
+      silent: true,
+    });
+    if (
+      !stats.executablePath ||
+      path.resolve(stats.executablePath) !== path.resolve(executablePath)
+    ) {
+      throw new Error("Refusing to launch an unverified Chromium build");
+    }
     const browser = await stats.puppeteer.launch({
       args: [
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36",
@@ -107,6 +130,10 @@ export class ChromiumCrawler {
     const urlStr = curUrl.toString();
 
     if (visitedLinks.has(urlStr)) {
+      return;
+    }
+
+    if (await resolvesToNonPublic(curUrl.hostname)) {
       return;
     }
 
@@ -242,7 +269,12 @@ export class ChromiumInstaller {
 
   async install() {
     try {
-      await PCR(ChromiumInstaller.PCR_CONFIG);
+      await downloadVerifiedChromium(ChromiumInstaller.PCR_CONFIG.downloadPath);
+      await PCR({
+        ...ChromiumInstaller.PCR_CONFIG,
+        revision: chromiumBuildFor().revision,
+        silent: true,
+      });
 
       ChromiumCrawler.setUseChromiumForDocsCrawling(true);
 

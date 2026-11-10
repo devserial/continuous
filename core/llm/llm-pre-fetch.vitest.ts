@@ -90,12 +90,16 @@ describe("LLM Pre-fetch", () => {
       expect.any(URL),
       {
         method: "POST",
-        // headers: expect.any(Object),
+        headers: { "x-goog-api-key": "invalid" },
         signal: expect.any(AbortSignal),
         body: expect.stringContaining('"name":"say_name","args":{}'),
       },
       expect.any(Object),
     );
+    const geminiUrl = String(
+      vi.mocked(fetchwithRequestOptions).mock.calls.at(-1)?.[0],
+    );
+    expect(geminiUrl).not.toContain("key=");
 
     // OPENAI DOES NOT NEED TO CLEAR INVALID TOOL CALL ARGS BECAUSE IT STORES THEM IN STRINGS
     vi.clearAllMocks();

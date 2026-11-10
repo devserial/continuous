@@ -1,18 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../../util/networkAddress", async (importOriginal) => {
-  const real =
-    await importOriginal<typeof import("../../util/networkAddress")>();
-  // Resolve by name in the test: "public.test" is public, "inside.test" is not.
-  return {
-    ...real,
-    resolvesToNonPublic: async (host: string) =>
-      host === "inside.test" || real.isNonPublicHostname(host),
-  };
-});
-
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { evaluateToolPolicyWithRules } from "../permissions/evaluate";
+import { POLICY_PRESETS } from "../permissions/policy";
+import { setHostResolver } from "../../util/networkAddress";
 import { fetchUrlContentTool } from "../definitions/fetchUrlContent";
 import { fetchUrlContentImpl } from "./fetchUrlContent";
+
+afterEach(() => setHostResolver(undefined));
+
+function useTestResolver() {
+  setHostResolver(async (host) => {
+    if (host === "inside.test") return ["10.0.0.5"];
+    if (host === "rebind.test") return ["8.8.8.8"];
+    return ["93.184.215.14"];
+  });
+}
 
 const page = (body = "<html><body><p>hello</p></body></html>") =>
   new Response(body, { status: 200, headers: { "content-type": "text/html" } });
@@ -24,6 +25,7 @@ const run = (url: string, fetch: any) =>
 
 describe("fetch_url redirect guard", () => {
   it("refuses a redirect from a public host to a non-public one", async () => {
+    useTestResolver();
     const fetch = vi.fn(async (u: URL) =>
       u.hostname === "public.test"
         ? redirect("http://169.254.169.254/latest")
@@ -36,6 +38,7 @@ describe("fetch_url redirect guard", () => {
   });
 
   it("refuses a redirect to a public-looking name that resolves inside", async () => {
+    useTestResolver();
     const fetch = vi.fn(async (u: URL) =>
       u.hostname === "public.test" ? redirect("http://inside.test/") : page(),
     );
@@ -44,7 +47,29 @@ describe("fetch_url redirect guard", () => {
     );
   });
 
+  it("connects with the addresses it checked", async () => {
+    let calls = 0;
+    setHostResolver(async (host) => {
+      if (host !== "rebind.test") return ["93.184.215.14"];
+      calls += 1;
+      return calls === 1 ? ["8.8.8.8"] : ["10.0.0.5"];
+    });
+    const fetch = vi.fn(async (_url: URL, init: { lookup?: Function }) => {
+      const address = await new Promise<string>((resolve, reject) => {
+        init.lookup?.("rebind.test", {}, (err: Error | null, found: string) => {
+          if (err) reject(err);
+          else resolve(found);
+        });
+      });
+      expect(address).toBe("8.8.8.8");
+      return page();
+    });
+    await run("http://rebind.test/", fetch);
+    expect(calls).toBe(1);
+  });
+
   it("follows redirects between public hosts", async () => {
+    useTestResolver();
     const fetch = vi.fn(async (u: URL) =>
       u.pathname === "/old" ? redirect("/new") : page(),
     );
@@ -54,6 +79,7 @@ describe("fetch_url redirect guard", () => {
   });
 
   it("follows redirects within an approved non-public URL", async () => {
+    useTestResolver();
     const fetch = vi.fn(async (u: URL) =>
       u.pathname === "/" ? redirect("http://127.0.0.1:3000/docs") : page(),
     );
@@ -70,6 +96,60 @@ describe("fetch_url policy", () => {
     expect(policy("http://localhost:8080/")).toBe("allowedWithPermission");
     expect(policy("http://169.254.169.254/")).toBe("allowedWithPermission");
     expect(policy("http://10.0.0.1/")).toBe("allowedWithPermission");
+    expect(policy("http://[::ffff:169.254.169.254]/")).toBe(
+      "allowedWithPermission",
+    );
+    expect(policy("http://[64:ff9b::169.254.169.254]/")).toBe(
+      "allowedWithPermission",
+    );
+  });
+
+  it("asks for a name that resolves to a private address", async () => {
+    useTestResolver();
+    const processed = await fetchUrlContentTool.preprocessArgs!(
+      { url: "http://inside.test/" },
+      { ide: {} as never },
+    );
+    expect(processed.nonPublic).toBe(true);
+    expect(
+      fetchUrlContentTool.evaluateToolCallPolicy!(
+        "allowedWithoutPermission",
+        { url: "http://inside.test/" },
+        processed,
+      ),
+    ).toBe("allowedWithPermission");
+  });
+
+  it("Hands-off still asks for a private or mapped address", () => {
+    const decide = (url: string, processedArgs?: Record<string, unknown>) =>
+      evaluateToolPolicyWithRules({
+        tool: fetchUrlContentTool,
+        toolName: "fetch_url_content",
+        basePolicy: "allowedWithoutPermission",
+        parsedArgs: { url },
+        processedArgs,
+        permissions: { allow: ["fetchUrl"] },
+        approval: { levels: POLICY_PRESETS.handsOff.levels },
+      });
+    expect(decide("http://169.254.169.254/").policy).toBe(
+      "allowedWithPermission",
+    );
+    expect(
+      evaluateToolPolicyWithRules({
+        tool: fetchUrlContentTool,
+        toolName: "fetch_url_content",
+        basePolicy: "allowedWithPermission",
+        parsedArgs: { url: "http://169.254.169.254/" },
+        permissions: undefined,
+        approval: { levels: POLICY_PRESETS.handsOff.levels },
+      }).policy,
+    ).toBe("allowedWithPermission");
+    expect(decide("http://[::ffff:127.0.0.1]/").policy).toBe(
+      "allowedWithPermission",
+    );
+    expect(decide("https://example.com/").policy).toBe(
+      "allowedWithoutPermission",
+    );
   });
 
   it("keeps the user's policy for public URLs, and disabled stays disabled", () => {

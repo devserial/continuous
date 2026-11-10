@@ -16,7 +16,7 @@ import { isConfigPath, isSecretPath } from "./protectedPaths";
  *
  * Matching ignores case (Windows and macOS volumes do) and slash direction.
  */
-export type ProtectedKind = "secret" | "config" | "network";
+export type ProtectedKind = "secret" | "config" | "network" | "private-url";
 
 export interface ProtectedHit {
   kind: ProtectedKind;
@@ -66,6 +66,9 @@ export function protectedPathHit(
 
 /** One line for the prompt. */
 export function protectedReason(hit: ProtectedHit): string {
+  if (hit.kind === "private-url") {
+    return `This URL reaches a private or local address (${hit.path}), so it always asks first.`;
+  }
   if (hit.kind === "network") {
     return `This touches the network path ${hit.path}. Looking it up contacts that computer, and on Windows can send your login to it, so it always asks first.`;
   }

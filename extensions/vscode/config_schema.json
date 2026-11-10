@@ -2793,7 +2793,7 @@
               },
               "useLocalCrawling": {
                 "type": "boolean",
-                "description": "Only use local crawling for this documentation site"
+                "description": "Crawl this documentation site on this machine. This is the default. Set to false to send the site URL to the upstream crawl service."
               }
             },
             "required": ["title", "startUrl"]

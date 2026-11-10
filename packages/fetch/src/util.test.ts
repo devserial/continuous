@@ -235,3 +235,35 @@ test("shouldBypassProxy handles non-string NO_PROXY value", () => {
   (process.env as any).NO_PROXY = 1234;
   expect(shouldBypassProxy("example.com", undefined)).toBe(false);
 });
+
+test("a leading-dot suffix does not match a different label", () => {
+  expect(
+    patternMatchesHostname("evilcorp.example.com", ".corp.example.com"),
+  ).toBe(false);
+  expect(patternMatchesHostname("notexample.com", ".example.com")).toBe(false);
+  expect(
+    patternMatchesHostname("foo.corp.example.com", ".corp.example.com"),
+  ).toBe(true);
+  expect(patternMatchesHostname("corp.example.com", ".corp.example.com")).toBe(
+    true,
+  );
+});
+
+test("a bare domain matches that host and its subdomains", () => {
+  expect(patternMatchesHostname("example.com", "example.com")).toBe(true);
+  expect(patternMatchesHostname("sub.example.com", "example.com")).toBe(true);
+  expect(patternMatchesHostname("notexample.com", "example.com")).toBe(false);
+});
+
+test("NO_PROXY=* matches every host", () => {
+  expect(patternMatchesHostname("example.com", "*")).toBe(true);
+  expect(patternMatchesHostname("10.1.2.3", "*")).toBe(true);
+});
+
+test("CIDR entries match addresses inside the prefix", () => {
+  expect(patternMatchesHostname("10.1.2.3", "10.0.0.0/8")).toBe(true);
+  expect(patternMatchesHostname("11.0.0.1", "10.0.0.0/8")).toBe(false);
+  expect(patternMatchesHostname("192.168.1.9", "192.168.0.0/16")).toBe(true);
+  expect(patternMatchesHostname("fe80::1", "fe80::/10")).toBe(true);
+  expect(patternMatchesHostname("2001:db8::1", "fe80::/10")).toBe(false);
+});

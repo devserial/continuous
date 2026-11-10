@@ -62,6 +62,8 @@ describe.skipIf(!hasOpenssl())("createWebFetch", () => {
             method: req.method,
             body,
             auth: req.headers.authorization ?? null,
+            apiKey: req.headers["x-api-key"] ?? null,
+            googKey: req.headers["x-goog-api-key"] ?? null,
             contentType: req.headers["content-type"] ?? null,
           }),
         );
@@ -230,6 +232,8 @@ describe.skipIf(!hasOpenssl())("createWebFetch", () => {
       method: "POST",
       body: "hello",
       auth: "Bearer t",
+      apiKey: null,
+      googKey: null,
       contentType: "text/plain",
     });
   });
@@ -305,10 +309,27 @@ describe.skipIf(!hasOpenssl())("createWebFetch", () => {
   test("a redirect to another origin drops credentials", async () => {
     const f = createWebFetch({ caBundlePath: caPath });
     const resp = await f(url("/redirect-away"), {
-      headers: { Authorization: "Bearer secret", Cookie: "session=1" },
+      headers: {
+        Authorization: "Bearer secret",
+        Cookie: "session=1",
+        "x-api-key": "secret-key",
+        "x-goog-api-key": "goog-secret",
+        "api-key": "azure-secret",
+      },
     });
     expect(resp.status).toBe(200);
-    expect((await resp.json()).auth).toBeNull();
+    const body = await resp.json();
+    expect(body.auth).toBeNull();
+    expect(body.apiKey).toBeNull();
+    expect(body.googKey).toBeNull();
+  });
+
+  test("a same-origin redirect keeps API key headers", async () => {
+    const f = createWebFetch({ caBundlePath: caPath });
+    const resp = await f(url("/redirect"), {
+      headers: { "x-api-key": "secret-key" },
+    });
+    expect((await resp.json()).apiKey).toBe("secret-key");
   });
 
   test("redirect: 'error' and redirect loops fail", async () => {

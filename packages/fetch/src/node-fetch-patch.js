@@ -258,6 +258,10 @@ export default async function fetch(url, options_) {
             // headers will also be ignored when following a redirect to a domain using
             // a different protocol. For example, a redirect from "https://foo.com" to "http://foo.com"
             // will not forward the sensitive headers
+            const apiKeyHeaders = ["x-api-key", "api-key", "x-goog-api-key"];
+            // A different host or protocol drops every credential, including
+            // provider API-key headers. A same-site origin change (another
+            // port or subdomain) still drops the API-key headers.
             if (
               !isDomainOrSubdomain(request.url, locationURL) ||
               !isSameProtocol(request.url, locationURL)
@@ -267,7 +271,14 @@ export default async function fetch(url, options_) {
                 "www-authenticate",
                 "cookie",
                 "cookie2",
+                ...apiKeyHeaders,
               ]) {
+                requestOptions.headers.delete(name);
+              }
+            } else if (
+              new URL(request.url).origin !== new URL(locationURL).origin
+            ) {
+              for (const name of apiKeyHeaders) {
                 requestOptions.headers.delete(name);
               }
             }

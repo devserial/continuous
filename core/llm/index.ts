@@ -1,5 +1,5 @@
 import { ModelRole } from "@continuedev/config-yaml";
-import { fetchwithRequestOptions } from "@continuedev/fetch";
+import { fetchwithRequestOptions, redactUrl } from "@continuedev/fetch";
 import { findLlmInfo } from "@continuedev/llm-info";
 import {
   BaseLlmApi,
@@ -544,7 +544,7 @@ export abstract class BaseLLM implements ILLM {
       }
     }
     return new Error(
-      `HTTP ${resp.status} ${resp.statusText} from ${resp.url}\n\n${text}`,
+      `HTTP ${resp.status} ${resp.statusText} from ${redactUrl(String(resp.url ?? ""))}\n\n${text}`,
     );
   }
 
@@ -572,7 +572,7 @@ export abstract class BaseLLM implements ILLM {
       } catch (e: any) {
         Logger.error(e, {
           context: "llm_fetch",
-          url: String(input),
+          url: redactUrl(String(input)),
           method: init?.method || "GET",
           model: this.model,
           provider: this.providerName,
@@ -583,7 +583,7 @@ export abstract class BaseLLM implements ILLM {
           throw new Error(`Error fetching tags: ${e.message}`);
         } else if (e.message.includes("/api/show")) {
           throw new Error(
-            `HTTP ${e.response.status} ${e.response.statusText} from ${e.response.url}\n\n${e.response.body}`,
+            `HTTP ${e.response.status} ${e.response.statusText} from ${redactUrl(String(e.response.url ?? ""))}\n\n${e.response.body}`,
           );
         } else {
           if (!isAbortError(e)) {

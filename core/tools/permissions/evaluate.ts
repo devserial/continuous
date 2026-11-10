@@ -10,9 +10,11 @@ import {
 } from "./approval";
 import { DecisionSource, decideToolCall, findRuleMatch } from "./decide";
 import type { ShellKind } from "../../util/shell";
+import { isPrivateFetchTarget } from "../../util/networkAddress";
 import { builtinRuleOn } from "./policy";
 import { parsePermissions, uriToPath } from "./names";
 import { findProtected } from "./protectedCall";
+import type { ProtectedHit } from "./protected";
 import type { ToolPermissions } from "./rules";
 
 export interface ToolPolicyResult {
@@ -93,12 +95,24 @@ export function evaluateToolPolicyWithRules(
   // Credentials and files that change what runs later always ask, with or
   // without rules, so this runs for every user and not only those with rules.
   // It only ever tightens: a call that is already refused stays refused.
-  const protectedHit = findProtected({
-    toolName,
-    parsedArgs,
-    resolvedPath,
-    skip: skippedProtections(input.approval),
-  });
+  // A private or local URL always asks. Permissive (Hands-off) and an allow
+  // rule can loosen the tool's own "ask", so this is a protection, like a
+  // protected path. YOLO still reaches past it.
+  const privateUrl =
+    toolName === "fetch_url_content" &&
+    isPrivateFetchTarget(parsedArgs.url, processedArgs)
+      ? ({
+          kind: "private-url",
+          path: fetchHost(parsedArgs.url),
+        } satisfies ProtectedHit)
+      : undefined;
+  const protectedHit =
+    findProtected({
+      toolName,
+      parsedArgs,
+      resolvedPath,
+      skip: skippedProtections(input.approval),
+    }) ?? privateUrl;
 
   // The floor: deny rules the person wrote to bind even at YOLO
   const floorRules = parsePermissions({ deny: input.approval?.floor });
@@ -181,4 +195,13 @@ export function evaluateToolPolicyWithRules(
     ...(decision.rule ? { rule: decision.rule } : {}),
     ...(found?.readOnly ? { readOnly: found.readOnly } : {}),
   };
+}
+
+function fetchHost(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  try {
+    return new URL(raw).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return raw;
+  }
 }

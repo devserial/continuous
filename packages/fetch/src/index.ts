@@ -11,6 +11,7 @@ import { createAgentForUrl, needsCustomAgent } from "./agent.js";
 import { CertsCache, defaultUseSystemCa } from "./certs.js";
 import { fetchwithRequestOptions } from "./fetch.js";
 import { getTlsErrorHint } from "./tlsErrors.js";
+import { redactBody, redactHeaderValue, redactUrl } from "./redact.js";
 import { createWebFetch } from "./webFetch.js";
 
 export {
@@ -22,6 +23,9 @@ export {
   getTlsErrorHint,
   needsCustomAgent,
   patchedFetch,
+  redactBody,
+  redactHeaderValue,
+  redactUrl,
   streamJSON,
   streamResponse,
   streamSse,

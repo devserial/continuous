@@ -10,7 +10,7 @@ import {
   FetchFunction,
 } from "../../index.js";
 import { fetchFavicon } from "../../util/fetchFavicon";
-import { resolvesToNonPublic } from "../../util/networkAddress";
+import { classifyHost, pinnedLookup } from "../../util/networkAddress";
 
 class URLContextProvider extends BaseContextProvider {
   static description: ContextProviderDescription = {
@@ -93,10 +93,17 @@ async function fetchWithGuardedRedirects(
   start: URL,
   fetchFn: FetchFunction,
 ): Promise<any> {
-  const startsNonPublic = await resolvesToNonPublic(start.hostname);
+  // One resolution per hop, then the connection is pinned to those addresses.
   let current = start;
+  let checked = await classifyHost(current.hostname);
+  const startsNonPublic = checked.nonPublic;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const resp = await fetchFn(current, { redirect: "manual" });
+    const resp = await fetchFn(current, {
+      redirect: "manual",
+      ...(checked.addresses.length
+        ? { lookup: pinnedLookup(checked.addresses) }
+        : {}),
+    });
     const location: string | null | undefined = resp.headers?.get?.("location");
     if (resp.status < 300 || resp.status >= 400 || !location) return resp;
 
@@ -104,7 +111,8 @@ async function fetchWithGuardedRedirects(
     if (next.protocol !== "http:" && next.protocol !== "https:") {
       throw new Error(`Refused to follow a redirect to ${next.protocol} URL`);
     }
-    if (!startsNonPublic && (await resolvesToNonPublic(next.hostname))) {
+    checked = await classifyHost(next.hostname);
+    if (!startsNonPublic && checked.nonPublic) {
       throw new Error(
         `Refused to follow a redirect from ${start.host} to a non-public address (${next.host})`,
       );

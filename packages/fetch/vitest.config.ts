@@ -23,6 +23,7 @@ export default defineConfig({
       "./util.js": "./util.ts",
       "./certs.js": "./certs.ts",
       "./fetch.js": "./fetch.ts",
+      "./redact.js": "./redact.ts",
     },
   },
 });

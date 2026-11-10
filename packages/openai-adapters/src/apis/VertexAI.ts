@@ -184,7 +184,8 @@ export class VertexAIApi implements BaseLlmApi {
     // TODO - support anthropic prompt caching with "anthropic-beta" header
 
     if (this.config.apiKey) {
-      // Express mode - no Authorization header needed, API key is in URL
+      // Express mode sends the key as a header so it is not part of the URL.
+      headers["x-goog-api-key"] = this.config.apiKey;
       return headers;
     } else {
       // Standard mode - use OAuth token
@@ -203,10 +204,6 @@ export class VertexAIApi implements BaseLlmApi {
   private buildUrl(endpoint: string, model?: string): URL {
     const apiBase = this.getApiBase();
     const url = new URL(endpoint, apiBase);
-
-    if (this.config.apiKey) {
-      url.searchParams.set("key", this.config.apiKey);
-    }
 
     return url;
   }

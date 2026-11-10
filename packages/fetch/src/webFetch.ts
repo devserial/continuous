@@ -12,6 +12,9 @@ const CREDENTIAL_HEADERS = [
   "cookie2",
   "proxy-authorization",
   "www-authenticate",
+  "x-api-key",
+  "api-key",
+  "x-goog-api-key",
 ];
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
@@ -99,7 +102,9 @@ export function createWebFetch(requestOptions?: RequestOptions): WebFetch {
     const redirect = init?.redirect ?? "follow";
 
     for (;;) {
-      const { agent } = await createAgentForUrl(url, requestOptions);
+      const lookup = (init as { lookup?: unknown } | undefined)?.lookup as
+        Parameters<typeof createAgentForUrl>[2] | undefined;
+      const { agent } = await createAgentForUrl(url, requestOptions, lookup);
       const response = await new Promise<Response>((resolve, reject) => {
         if (signal?.aborted) {
           reject(signal.reason ?? new DOMException("Aborted", "AbortError"));

@@ -50,28 +50,43 @@ export class HttpsProxyAgentWithTls extends HttpsProxyAgent<string> {
  * For clients that bring their own HTTP stack (e.g. the AWS SDK) and would
  * otherwise ignore these settings.
  */
+/** `dns.lookup`-shaped callback used to pin a connection to addresses already checked. */
+export type PinnedLookup = (
+  hostname: string,
+  options: unknown,
+  callback?: (
+    err: NodeJS.ErrnoException | null,
+    address: string | { address: string; family: number }[],
+    family?: number,
+  ) => void,
+) => void;
+
 export async function createAgentForUrl(
   url: URL | string,
   requestOptions?: RequestOptions,
+  /** When set, the direct connection uses these addresses instead of resolving again. */
+  lookup?: PinnedLookup,
 ): Promise<{ agent: HttpAgent | HttpsAgent; proxy?: string }> {
   const target = typeof url === "string" ? new URL(url) : url;
   const agentOptions = await getAgentOptions(requestOptions);
   const proxy = getProxy(target.protocol, requestOptions);
   const bypass = shouldBypassProxy(target.hostname, requestOptions);
   const useProxy = !!proxy && !bypass;
+  // A proxy resolves the target itself. Pinning applies to the direct connection.
+  const directOptions = lookup ? { ...agentOptions, lookup } : agentOptions;
 
   if (target.protocol === "https:") {
     return {
       agent: useProxy
         ? new HttpsProxyAgentWithTls(proxy, agentOptions)
-        : new HttpsAgent(agentOptions),
+        : new HttpsAgent(directOptions),
       proxy: useProxy ? proxy : undefined,
     };
   }
   return {
     agent: useProxy
       ? new HttpProxyAgent(proxy, agentOptions)
-      : new HttpAgent(agentOptions),
+      : new HttpAgent(directOptions),
     proxy: useProxy ? proxy : undefined,
   };
 }

@@ -1,6 +1,6 @@
 import { ToolPolicy } from "@continuedev/terminal-security";
 import { Tool } from "../..";
-import { isNonPublicHostname } from "../../util/networkAddress";
+import { classifyHost, isPrivateFetchTarget } from "../../util/networkAddress";
 import { BUILT_IN_GROUP_NAME, BuiltInToolNames } from "../builtIn";
 
 export const fetchUrlContentTool: Tool = {
@@ -28,19 +28,31 @@ export const fetchUrlContentTool: Tool = {
     },
   },
   defaultToolPolicy: "allowedWithPermission",
+  // Resolve before the policy check so a name that points at a private
+  // address asks, and so the later connection can reuse that answer.
+  preprocessArgs: async (args) => {
+    const raw = args.url;
+    if (typeof raw !== "string") return {};
+    let hostname: string;
+    try {
+      hostname = new URL(raw).hostname;
+    } catch {
+      return {};
+    }
+    const { addresses, nonPublic } = await classifyHost(hostname);
+    return { nonPublic, resolvedAddresses: addresses };
+  },
   // A URL on loopback, a private network or a local name always asks, even
   // when fetching is auto-approved: the model may have been steered there.
   evaluateToolCallPolicy: (
     basePolicy: ToolPolicy,
     args: Record<string, unknown>,
+    processedArgs?: Record<string, unknown>,
   ): ToolPolicy => {
     if (basePolicy === "disabled") return "disabled";
-    try {
-      const host = new URL(String(args.url)).hostname;
-      return isNonPublicHostname(host) ? "allowedWithPermission" : basePolicy;
-    } catch {
-      return basePolicy;
-    }
+    return isPrivateFetchTarget(args.url, processedArgs)
+      ? "allowedWithPermission"
+      : basePolicy;
   },
   systemMessageDescription: {
     prefix: `To fetch the content of a URL, use the ${BuiltInToolNames.FetchUrlContent} tool. For example, to read the contents of a webpage, you might respond with:`,
