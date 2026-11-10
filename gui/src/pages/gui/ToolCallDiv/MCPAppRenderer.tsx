@@ -9,9 +9,6 @@ import {
   buildAllowAttribute,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { ToolCallState } from "core";
-import { getToolNameFromMCPServer } from "core/tools/mcpToolName";
-import { generateOpenAIToolCallId } from "core/tools/systemMessageTools/systemToolUtils";
-import { renderContextItems } from "core/util/messageContent";
 import {
   useCallback,
   useContext,
@@ -20,9 +17,15 @@ import {
   useRef,
   useState,
 } from "react";
+import { useStore } from "react-redux";
 import { IdeMessengerContext } from "../../../context/IdeMessenger";
 import { useAppDispatch } from "../../../redux/hooks";
-import { streamResponseThunk } from "../../../redux/thunks/streamResponse";
+import { RootState } from "../../../redux/store";
+import {
+  McpAppApproval,
+  runMcpAppToolCall,
+  sendMcpAppTurn,
+} from "./mcpAppToolCall";
 
 /**
  * Build a CSP meta tag content string from McpUiResourceCsp configuration.
@@ -73,6 +76,58 @@ function buildCspMetaContent(csp: McpUiResourceCsp | undefined): string {
   return directives.join("; ");
 }
 
+function McpAppCallApproval({
+  title,
+  note,
+  detail,
+  onAccept,
+  onReject,
+}: McpAppApproval & {
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/85 p-5"
+      data-testid="mcp-app-tool-approval"
+    >
+      <div className="max-w-[25rem] text-center">
+        <p className="mb-2 text-sm font-medium text-foreground">
+          Allow this app to call {title}?
+        </p>
+        {note && (
+          <p className="mb-2 text-xs leading-relaxed text-description">
+            {note}
+          </p>
+        )}
+        {detail && (
+          <pre className="mb-4 max-h-24 overflow-auto text-left text-2xs whitespace-pre-wrap text-description">
+            {detail}
+          </pre>
+        )}
+        <div className="flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={onReject}
+            data-testid="mcp-app-tool-reject"
+            className="cursor-pointer rounded-sm border border-input bg-input px-4 py-2 text-xs font-medium text-foreground"
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            onClick={onAccept}
+            data-testid="mcp-app-tool-accept"
+            className="cursor-pointer rounded-sm border-none bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:bg-primary-hover"
+          >
+            Accept
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * MCP App renderer using AppBridge with srcdoc iframe.
  * VS Code webviews have restrictive CSP that blocks iframe src URLs,
@@ -96,7 +151,10 @@ export function McpAppRenderer({
 }) {
   const ideMessenger = useContext(IdeMessengerContext);
   const dispatch = useAppDispatch();
+  const store = useStore<RootState>();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const toolCallStateRef = useRef(toolCallState);
+  toolCallStateRef.current = toolCallState;
   const appBridgeRef = useRef<AppBridge | null>(null);
   const [iframeHeight, setIframeHeight] = useState(300);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -114,6 +172,45 @@ export function McpAppRenderer({
 
   const [permissionWarningDismissed, setPermissionWarningDismissed] =
     useState(false);
+  const [pendingApproval, setPendingApproval] = useState<
+    (McpAppApproval & { resolve: (allowed: boolean) => void }) | null
+  >(null);
+  const pendingApprovalRef = useRef(pendingApproval);
+  const approvalQueueRef = useRef<
+    (McpAppApproval & { resolve: (allowed: boolean) => void })[]
+  >([]);
+
+  const settleApproval = useCallback((allowed: boolean) => {
+    const current = pendingApprovalRef.current;
+    if (!current) return;
+    current.resolve(allowed);
+    const next = approvalQueueRef.current.shift() ?? null;
+    pendingApprovalRef.current = next;
+    setPendingApproval(next);
+  }, []);
+
+  const askApproval = useCallback((approval: McpAppApproval) => {
+    return new Promise<boolean>((resolve) => {
+      const item = { ...approval, resolve };
+      if (pendingApprovalRef.current) {
+        approvalQueueRef.current.push(item);
+        return;
+      }
+      pendingApprovalRef.current = item;
+      setPendingApproval(item);
+    });
+  }, []);
+  const askApprovalRef = useRef(askApproval);
+  askApprovalRef.current = askApproval;
+
+  useEffect(() => {
+    return () => {
+      pendingApprovalRef.current?.resolve(false);
+      for (const item of approvalQueueRef.current) item.resolve(false);
+      approvalQueueRef.current = [];
+      pendingApprovalRef.current = null;
+    };
+  }, []);
 
   const restrictedPermissions = useMemo(() => {
     const restricted: string[] = [];
@@ -185,48 +282,34 @@ export function McpAppRenderer({
         return {};
       }
 
-      const editorState = {
-        type: "doc",
-        content: [
-          {
-            type: "paragraph",
-            content: [{ type: "text", text }],
-          },
-        ],
-      };
-
       void dispatch(
-        streamResponseThunk({
-          editorState,
-          modifiers: { noContext: true, useCodebase: false },
+        sendMcpAppTurn({
+          serverName: toolCallStateRef.current.tool?.group ?? "",
+          text,
         }),
       );
 
       return {};
     };
 
-    bridge.oncalltool = async (params: any) => {
-      const output = await ideMessenger.request("tools/call", {
-        toolCall: {
-          function: {
-            name: getToolNameFromMCPServer(
-              toolCallState.tool?.group ?? "",
-              params.name,
-            ),
-            arguments: JSON.stringify(params.arguments),
-          },
-          id: generateOpenAIToolCallId(),
-          type: "function",
-        },
+    bridge.oncalltool = async (params: {
+      name?: string;
+      arguments?: unknown;
+    }) => {
+      const result = await runMcpAppToolCall({
+        ideMessenger,
+        dispatch,
+        state: store.getState(),
+        serverName: toolCallStateRef.current.tool?.group ?? "",
+        requestedName: params.name ?? "",
+        toolArguments: params.arguments,
+        approve: (approval) => askApprovalRef.current(approval),
       });
-      if (output.status === "error") {
-        throw new Error(`Failed to call tool from MCP UI: ${output.error}`);
+      if (!result.ok) {
+        throw new Error(result.error);
       }
       return {
-        content: output.content.contextItems.map((ci) => ({
-          type: "text",
-          text: renderContextItems([ci]),
-        })),
+        content: result.content,
         isError: false,
       };
     };
@@ -271,7 +354,7 @@ export function McpAppRenderer({
     return () => {
       appBridgeRef.current = null;
     };
-  }, [ideMessenger, dispatch]);
+  }, [ideMessenger, dispatch, store]);
 
   // Connect bridge to iframe when it loads
   const handleIframeLoad = useCallback(async () => {
@@ -394,6 +477,16 @@ ${html}
         style={{ height: iframeHeight }}
         title={`MCP App - ${toolCallState.toolCall.function.name}`}
       />
+
+      {pendingApproval && (
+        <McpAppCallApproval
+          title={pendingApproval.title}
+          note={pendingApproval.note}
+          detail={pendingApproval.detail}
+          onAccept={() => settleApproval(true)}
+          onReject={() => settleApproval(false)}
+        />
+      )}
 
       {hasRestrictedPermissions && !permissionWarningDismissed && (
         <div
