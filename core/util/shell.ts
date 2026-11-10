@@ -5,6 +5,10 @@
  * backtick are not the same thing in bash, PowerShell and cmd
  * (plans/command-analysis.md).
  */
+import { containerArgs } from "./containerArgs";
+import { sourceEncodedArgs } from "./sourceEncoded";
+
+export { sourceEncodedArgs };
 export type ShellKind =
   /** bash, and any shell that starts as one */
   | "bash"
@@ -66,16 +70,32 @@ export interface ShellEnvironment {
   terminalShell?: TerminalShellPreference | "default";
 }
 
+/** The host user, for a container that writes files as them (not on Windows). */
+export function hostUser(): { uid: number; gid: number } | undefined {
+  return typeof process.getuid === "function" &&
+    typeof process.getgid === "function"
+    ? { uid: process.getuid(), gid: process.getgid() }
+    : undefined;
+}
+
 /**
  * Where the person asked terminal commands to run instead of the host's own
- * shell. Only WSL is offered: on Windows, commands run in a WSL distribution
- * through `wsl.exe` (plans/isolation.md, W1).
+ * shell: in a WSL distribution on Windows (plans/isolation.md, W1), or in a
+ * container (W2), `docker run` or `podman run` once per command.
  */
-export interface TerminalShellPreference {
-  kind: "wsl";
-  /** The distribution (`wsl -l`); the default distribution when absent */
-  distro?: string;
-}
+export type TerminalShellPreference =
+  | {
+      kind: "wsl";
+      /** The distribution (`wsl -l`); the default distribution when absent */
+      distro?: string;
+    }
+  | {
+      kind: "container";
+      /** docker or podman; docker if present, else podman, when absent */
+      runtime?: "docker" | "podman";
+      /** The image; `ubuntu:24.04` when absent */
+      image?: string;
+    };
 
 /**
  * `wsl` or `wsl:<distribution>` (also `wsl/<distribution>`), as written in
@@ -85,10 +105,28 @@ export interface TerminalShellPreference {
 export function parseTerminalShell(
   value: string | undefined,
 ): TerminalShellPreference | undefined {
-  const m = /^wsl(?:[:/](.+))?$/i.exec((value ?? "").trim());
-  if (!m) return undefined;
-  const distro = m[1]?.trim();
-  return distro ? { kind: "wsl", distro } : { kind: "wsl" };
+  const text = (value ?? "").trim();
+  const m = /^wsl(?:[:/](.+))?$/i.exec(text);
+  if (m) {
+    const distro = m[1]?.trim();
+    return distro ? { kind: "wsl", distro } : { kind: "wsl" };
+  }
+  // container, container:docker, container:podman:<image>, container:<image>;
+  // an image may hold a colon (a tag), so only a leading runtime name is split off
+  const c = /^container(?::(.*))?$/i.exec(text);
+  if (!c) return undefined;
+  let rest = (c[1] ?? "").trim();
+  let runtime: "docker" | "podman" | undefined;
+  const r = /^(docker|podman)(?::(.*))?$/i.exec(rest);
+  if (r) {
+    runtime = r[1].toLowerCase() as "docker" | "podman";
+    rest = (r[2] ?? "").trim();
+  }
+  return {
+    kind: "container",
+    ...(runtime ? { runtime } : {}),
+    ...(rest ? { image: rest } : {}),
+  };
 }
 
 let configuredShell: TerminalShellPreference | undefined;
@@ -117,13 +155,10 @@ export function getTerminalShellPreference(
  * long command (over about 24,000 before encoding) fails to start.
  */
 export function wslArgs(command: string, distro?: string): string[] {
-  const encoded = Buffer.from(command, "utf8").toString("base64");
   return [
     ...(distro ? ["-d", distro] : []),
     "--",
-    "bash",
-    "-lc",
-    `source <(echo ${encoded} | base64 -d)`,
+    ...sourceEncodedArgs(command),
   ];
 }
 
@@ -141,6 +176,25 @@ export function resolveShell(opts: ShellEnvironment = {}): ResolvedShell {
     opts.terminalShell === "default"
       ? undefined
       : (opts.terminalShell ?? getTerminalShellPreference(env));
+  if (preference?.kind === "container") {
+    // The command is bash's inside the container, whatever the host is. The
+    // executor picks the runtime and the mounted folder; this is the shape
+    // other readers of the shell (the policy's classifiers) need.
+    const runtime = preference.runtime ?? "docker";
+    return {
+      kind: "bash",
+      executable: runtime,
+      args: (command) =>
+        containerArgs(command, {
+          runtime,
+          image: preference.image,
+          cwd: process.cwd(),
+          platform,
+          user: hostUser(),
+        }),
+      runsProfile: false,
+    };
+  }
   if (platform === "win32" && preference?.kind === "wsl") {
     // The command is bash's, whatever the host is: the classifiers, the
     // lint and the policy engine read it with bash's grammar

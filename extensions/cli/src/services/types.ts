@@ -63,7 +63,12 @@ export interface ModelServiceState {
 }
 
 export type MCPServerStatus = "idle" | "connecting" | "connected" | "error";
-export type MCPTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
+export type MCPTool = Awaited<
+  ReturnType<Client["listTools"]>
+>["tools"][number] & {
+  /** Set when the service flattens a server's tools, for permission checks. */
+  serverName?: string;
+};
 export type MCPPrompt = Awaited<
   ReturnType<Client["listPrompts"]>
 >["prompts"][number];

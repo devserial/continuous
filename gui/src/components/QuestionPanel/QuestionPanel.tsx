@@ -96,7 +96,7 @@ function LoopQuestionRow({
               pick={question.assumption}
               testIdPrefix="loop-choice"
               maxLength={LOOP_LIMITS.maxAnswerLength}
-              onChoose={(choice) => void answer({ text: choice })}
+              onChoose={(choice) => answer({ text: choice })}
             />
           ) : (
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
@@ -198,7 +198,7 @@ function PlanDecisionRow({
         options={options}
         pick={decision.pick}
         testIdPrefix="plan-decision"
-        onChoose={(answer) => void choose(answer)}
+        onChoose={(answer) => choose(answer)}
       />
       {error && (
         <div role="alert" className="mt-0.5 break-words text-error">

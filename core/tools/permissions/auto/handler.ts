@@ -15,7 +15,7 @@ import {
   ReviewerReasoning,
   unavailable,
 } from "./review";
-import { AutoReviewSessions } from "./state";
+import { AutoReviewSessions, reviewContextKey } from "./state";
 
 export interface AutoReviewRequest {
   sessionId: string;
@@ -159,32 +159,37 @@ export async function autoReviewToolCall(
 
   const state = deps.sessions.get(req.sessionId);
   const limits = deps.permissions?.auto?.limits;
-  const cached = state.cached(req.toolName, req.parsedArgs);
-  const raw =
-    cached ??
-    (await reviewToolCall(
-      deps.reviewer,
-      {
-        toolName: req.toolName,
-        args: req.parsedArgs,
-        history: req.history,
-        environment: deps.environment,
-        settings: deps.permissions?.auto,
-      },
-      {
-        timeoutMs: deps.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
-        signal: deps.signal,
-        headless: req.headless,
-        reasoning: deps.reviewerReasoning,
-      },
-    ));
-  if (!cached) state.remember(req.toolName, req.parsedArgs, raw);
+  const context = reviewContextKey(req.history.userMessages);
+  const cached = state.cached(req.toolName, req.parsedArgs, context);
+  // A cached answer is not counted again. The cap is for new refusals.
+  if (cached) {
+    return { ...base, ...cached, by: reviewedBy(cached), cached: true };
+  }
+  const raw = await reviewToolCall(
+    deps.reviewer,
+    {
+      toolName: req.toolName,
+      args: req.parsedArgs,
+      history: req.history,
+      environment: deps.environment,
+      settings: deps.permissions?.auto,
+    },
+    {
+      timeoutMs: deps.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+      signal: deps.signal,
+      headless: req.headless,
+      reasoning: deps.reviewerReasoning,
+    },
+  );
+  state.remember(req.toolName, req.parsedArgs, raw, context);
 
   const result = state.record(raw, limits);
-  const by =
-    result.category === "reviewer-unavailable" ||
+  return { ...base, ...result, by: reviewedBy(result) };
+}
+
+function reviewedBy(result: ReviewResult): "system" | "reviewer" {
+  return result.category === "reviewer-unavailable" ||
     result.category === "denial-limit"
-      ? "system"
-      : "reviewer";
-  return { ...base, ...result, by, ...(cached ? { cached: true } : {}) };
+    ? "system"
+    : "reviewer";
 }

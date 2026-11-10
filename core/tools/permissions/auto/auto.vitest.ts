@@ -133,6 +133,20 @@ describe("reviewer prompt", () => {
     );
   });
 
+  it("marks the person's words as trusted and tool arguments as data", () => {
+    const [system, user] = build({ command: "ls" }) as any[];
+    expect(system.content).toMatch(/\[\[USER-MESSAGES\]\]/);
+    expect(system.content).toMatch(/\[\[USER-GUIDANCE\]\]/);
+    expect(system.content).toMatch(/does not apply to \[\[USER-MESSAGES\]\]/);
+    const text = user.content as string;
+    expect(text).toContain("[[USER-MESSAGES]]");
+    expect(text).toContain("[[/USER-MESSAGES]]");
+    expect(text).toContain("[[USER-GUIDANCE]]");
+    expect(text).not.toMatch(/<<<USER-MESSAGES/);
+    expect(text).not.toMatch(/<<<USER-GUIDANCE/);
+    expect(text).toContain("<<<TOOL-CALL abc123");
+  });
+
   it("includes the user's guidance, markers and earlier calls, not outputs", () => {
     const [, user] = build({ command: "ls" }) as any[];
     expect(user.content).toMatch(/Never run migrations/);
@@ -271,12 +285,13 @@ describe("AutoReviewState caps", () => {
     expect(s.record(denied, undefined).decision).toBe("deny");
   });
 
-  it("caches by tool and arguments regardless of key order, but not outages", () => {
+  it("caches by tool, arguments and conversation, regardless of key order, but not outages", () => {
     const s = new AutoReviewState();
-    s.remember("t", { a: 1, b: 2 }, ok);
-    expect(s.cached("t", { b: 2, a: 1 })).toEqual(ok);
+    s.remember("t", { a: 1, b: 2 }, ok, "ctx");
+    expect(s.cached("t", { b: 2, a: 1 }, "ctx")).toEqual(ok);
+    expect(s.cached("t", { a: 1, b: 2 }, "later")).toBeUndefined();
     expect(s.cached("t", { a: 1 })).toBeUndefined();
-    expect(s.cached("u", { a: 1, b: 2 })).toBeUndefined();
+    expect(s.cached("u", { a: 1, b: 2 }, "ctx")).toBeUndefined();
     s.remember(
       "t",
       { x: 1 },
@@ -525,6 +540,30 @@ describe("autoReviewToolCall: rules come first", () => {
     const again = await run(deps, "npm test");
     expect(again.cached).toBe(true);
     expect(llm.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again after the person says something new", async () => {
+    const { llm, deps } = setup(allow);
+    await run(deps, "npm test");
+    const again = await run(deps, "npm test", {
+      history: {
+        userMessages: ["do the thing", "don't run that again"],
+        toolCalls: [],
+      },
+    });
+    expect(again.cached).toBeUndefined();
+    expect(llm.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not count a cached denial toward the cap again", async () => {
+    const { deps } = setup(deny("production-impact"), {
+      permissions: { auto: { limits: { consecutiveDenials: 3 } } },
+    });
+    expect((await run(deps, "make deploy")).decision).toBe("deny");
+    const cached = await run(deps, "make deploy");
+    expect(cached).toMatchObject({ decision: "deny", cached: true });
+    // Two new refusals, not three: the repeated call was not counted.
+    expect((await run(deps, "make other")).decision).toBe("deny");
   });
 
   it("stops the agent after repeated refusals, and tells the user why", async () => {

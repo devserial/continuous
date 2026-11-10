@@ -18,6 +18,7 @@ import {
   serializePlanFile,
   taskPlanForProposal,
   validatePlanArgs,
+  planCheckSummary,
   weakCheckNotes,
 } from "core/util/planFile.js";
 import { TASK_PLAN_LIMITS, taskPlanToMarkdown } from "core/util/taskPlan.js";
@@ -142,9 +143,10 @@ async function askDecisions(
 export { reloadPlanFile };
 
 /** The plan question: Build, Build in a loop, Keep planning, or a change. */
-function askBuild(relativePath: string): Promise<string> {
+function askBuild(relativePath: string, checks: string): Promise<string> {
+  const shown = checks ? `\n\n${checks}\n\n` : " ";
   return quizService.askQuestion({
-    question: `Build this plan? It is saved in ${relativePath}; edit the file first if you like. Or type what to change.`,
+    question: `Build this plan? It is saved in ${relativePath}; edit the file first if you like.${shown}Or type what to change.`,
     options: [
       PRESENT_PLAN_BUILD,
       PRESENT_PLAN_BUILD_IN_LOOP,
@@ -246,7 +248,7 @@ export const presentPlanTool: Tool = {
     // The loop entry (Shift+Tab): the person already chose to build in a loop
     const answer = isLoopEntry()
       ? PRESENT_PLAN_BUILD_IN_LOOP
-      : await askBuild(relativePath);
+      : await askBuild(relativePath, planCheckSummary(plan.items));
 
     if (answer === PRESENT_PLAN_BUILD) {
       reloadPlanFile(file);

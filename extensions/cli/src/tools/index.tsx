@@ -238,9 +238,12 @@ export function convertToolToChatCompletionTool(
   };
 }
 
-export function convertMcpToolToContinueTool(mcpTool: MCPTool): Tool {
+export function convertMcpToolToContinueTool(
+  mcpTool: MCPTool & { serverName?: string },
+): Tool {
   return {
     name: mcpTool.name,
+    ...(mcpTool.serverName ? { mcpServer: mcpTool.serverName } : {}),
     displayName: mcpTool.name,
     description: mcpTool.description ?? "",
     parameters: {

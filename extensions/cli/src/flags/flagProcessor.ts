@@ -6,6 +6,7 @@ import { setAutoReviewEnabled } from "../permissions/coreRules.js";
 import {
   loadPolicyFile,
   parsePolicySpec,
+  setCommandPermissionFlags,
   setPolicyLevels,
 } from "../permissions/policyLevels.js";
 import { PermissionMode } from "../permissions/types.js";
@@ -92,6 +93,13 @@ export function processCommandFlags(options: {
 
   // Convert legacy flags to mode
   const mode = convertLegacyModeFlags(options.readonly, options.auto);
+
+  // Remembered for loop workers, which are a separate process.
+  setCommandPermissionFlags({
+    allow: options.allow,
+    ask: options.ask,
+    exclude: options.exclude,
+  });
 
   // Build permission overrides
   const permissionOverrides = buildPermissionOverrides(

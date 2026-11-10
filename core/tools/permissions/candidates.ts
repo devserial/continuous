@@ -70,9 +70,10 @@ function nested(
   tail: string[],
   depth: number,
   out: Set<string>,
+  cap: CandidateCap,
 ): void {
   const run = (script: string | undefined) => {
-    if (script) addCommand(script, depth + 1, out);
+    if (script) addCommand(script, depth + 1, out, cap);
   };
   if (POSIX_SHELLS.has(name)) {
     const k = tail.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w));
@@ -93,8 +94,22 @@ function nested(
   }
 }
 
-function addPart(part: string, depth: number, out: Set<string>): void {
-  if (out.size > MAX_CANDIDATES) return;
+/** Set once a command is too large to expand in full. Callers must fail closed. */
+type CandidateCap = { truncated: boolean };
+
+function overCap(out: Set<string>, cap: CandidateCap): boolean {
+  if (out.size <= MAX_CANDIDATES) return false;
+  cap.truncated = true;
+  return true;
+}
+
+function addPart(
+  part: string,
+  depth: number,
+  out: Set<string>,
+  cap: CandidateCap,
+): void {
+  if (overCap(out, cap)) return;
   out.add(part);
   const rawWords = splitRawWords(part).map(stripGrouping).filter(Boolean);
   const words = rawWords.map(dequote).filter(Boolean);
@@ -102,6 +117,7 @@ function addPart(part: string, depth: number, out: Set<string>): void {
   out.add(words.join(" "));
 
   for (let i = 0; i < rawWords.length; i++) {
+    if (overCap(out, cap)) return;
     const tail = rawWords.slice(i + 1).map(unquoteWord);
     // A Windows path keeps its backslashes in the raw word; `g\it` loses them.
     // Try both readings of the command word.
@@ -117,19 +133,24 @@ function addPart(part: string, depth: number, out: Set<string>): void {
         out.add([canonicalCmdletName(name), ...tail].join(" "));
       }
       if (name === "git") out.add(["git", ...skipGitOptions(tail)].join(" "));
-      if (depth < MAX_DEPTH) nested(name, tail, depth, out);
+      if (depth < MAX_DEPTH) nested(name, tail, depth, out, cap);
     }
   }
 }
 
 /** Each part of a command, plus what is inside substitutions, scripts and simple variables. */
-function addCommand(command: string, depth: number, out: Set<string>): void {
-  if (out.size > MAX_CANDIDATES) return;
+function addCommand(
+  command: string,
+  depth: number,
+  out: Set<string>,
+  cap: CandidateCap,
+): void {
+  if (overCap(out, cap)) return;
   const parts = parseCommand(command).parts;
   const vars: Record<string, string> = {};
 
   for (const p of parts) {
-    addPart(p, depth, out);
+    addPart(p, depth, out, cap);
     const assign = /^([A-Za-z_]\w*)=(\S*)$/.exec(p);
     if (assign) {
       vars[assign[1]] = dequote(assign[2]);
@@ -137,13 +158,13 @@ function addCommand(command: string, depth: number, out: Set<string>): void {
       const expanded = p.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (s, n) =>
         n in vars ? vars[n] : s,
       );
-      if (expanded !== p) addPart(expanded, depth, out);
+      if (expanded !== p) addPart(expanded, depth, out, cap);
     }
   }
   if (depth >= MAX_DEPTH) return;
 
   for (const sub of extractSubstitutions(command)) {
-    addCommand(sub, depth + 1, out);
+    addCommand(sub, depth + 1, out, cap);
   }
 
   const names = parts.map((p) =>
@@ -157,7 +178,7 @@ function addCommand(command: string, depth: number, out: Set<string>): void {
     );
   if (feedsShell) {
     for (const p of parts) {
-      for (const lit of quotedLiterals(p)) addCommand(lit, depth + 1, out);
+      for (const lit of quotedLiterals(p)) addCommand(lit, depth + 1, out, cap);
     }
   }
   // `echo push | xargs git` runs `git push`.
@@ -173,17 +194,33 @@ function addCommand(command: string, depth: number, out: Set<string>): void {
     parts.forEach((q, j) => {
       if (j !== i && (names[j] === "echo" || names[j] === "printf")) {
         const args = splitRawWords(q).slice(1).map(unquoteWord).join(" ");
-        addPart(`${tail} ${args}`.trim(), depth + 1, out);
+        addPart(`${tail} ${args}`.trim(), depth + 1, out, cap);
       }
     });
   });
 }
 
+export interface CommandCandidateSet {
+  list: string[];
+  /**
+   * True when the command was too large to expand in full. A later part may
+   * be missing, so a deny, ask, effect or protected-path check must fail
+   * closed instead of treating the gap as "no match".
+   */
+  truncated: boolean;
+}
+
+/** Every string a deny or ask rule should be tried against, and whether the cap stopped the expansion. */
+export function commandCandidateSet(command: string): CommandCandidateSet {
+  const out = new Set<string>([command]);
+  const cap: CandidateCap = { truncated: false };
+  addCommand(command, 0, out, cap);
+  return { list: [...out], truncated: cap.truncated };
+}
+
 /** Every string a deny or ask rule should be tried against for a whole command. */
 export function commandCandidates(command: string): string[] {
-  const out = new Set<string>([command]);
-  addCommand(command, 0, out);
-  return [...out];
+  return commandCandidateSet(command).list;
 }
 
 /** The candidates for one part of a command. */

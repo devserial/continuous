@@ -9,10 +9,12 @@ import {
 } from "core/tools/permissions/auto/handler.js";
 import { buildReviewHistory } from "core/tools/permissions/auto/history.js";
 import { AutoReviewSessions } from "core/tools/permissions/auto/state.js";
+import type { DecisionSource } from "core/tools/permissions/decide.js";
 import {
   evaluateToolPolicyWithRules,
   type ToolPolicyResult,
 } from "core/tools/permissions/evaluate.js";
+import { mcpRuleName } from "core/tools/permissions/names.js";
 import type { ToolPermissions as CoreToolPermissions } from "core/tools/permissions/rules.js";
 import { resolveShell } from "core/util/shell.js";
 
@@ -32,10 +34,17 @@ import type { PermissionPolicy } from "./types.js";
  */
 
 /** CLI tool name to the name and arguments the core engine understands. */
+export interface CoreCall {
+  toolName: string;
+  parsedArgs: Record<string, unknown>;
+  /** Set when the call is an MCP tool, so floor rules on `mcp__server__*` bind. */
+  mcp?: { serverName: string; toolName: string };
+}
+
 export function toCoreCall(
   name: string,
   args: Record<string, unknown>,
-): { toolName: string; parsedArgs: Record<string, unknown> } | undefined {
+): CoreCall | undefined {
   switch (name) {
     case "Bash":
       return { toolName: "run_terminal_command", parsedArgs: args };
@@ -59,10 +68,28 @@ export function toCoreCall(
       return { toolName: "fetch_url_content", parsedArgs: args };
     case "Search":
       return { toolName: "grep_search", parsedArgs: { query: args.pattern } };
-    default:
-      // MCP and other tools have no core name here, so rules do not apply.
-      return undefined;
+    default: {
+      const mcp = mcpCallFromName(name);
+      if (!mcp) return undefined;
+      return {
+        toolName: mcpRuleName(mcp.serverName, mcp.toolName),
+        parsedArgs: args,
+        mcp,
+      };
+    }
   }
+}
+
+/**
+ * An MCP tool the CLI offered under `mcp__<server>__<tool>`, or a tool that
+ * already carries its server. Floor rules are written in that form.
+ */
+export function mcpCallFromName(
+  name: string,
+): { serverName: string; toolName: string } | undefined {
+  const match = /^mcp__([^_].*?)__([^_].+)$/.exec(name);
+  if (!match) return undefined;
+  return { serverName: match[1], toolName: match[2] };
 }
 
 function toToolPolicy(p: PermissionPolicy): ToolPolicy {
@@ -162,6 +189,8 @@ export interface CoreVerdict {
   reason?: string;
   /** Who decided: the rules, the reviewer model, or Auto itself. */
   by: "rules" | "reviewer" | "system";
+  /** Which check decided, when the rules did. Headless runs keep deny, floor and protected paths. */
+  source?: DecisionSource;
 }
 
 export interface CoreRulesInput {
@@ -179,6 +208,11 @@ export interface CoreRulesInput {
   autoReview?: boolean;
   /** The level of each policy area (see policyLevels.ts) */
   approval?: ApprovalSettings;
+  /**
+   * The MCP server and tool, when the CLI tool is not named `mcp__server__tool`.
+   * Floor rules use that form either way.
+   */
+  mcp?: { serverName: string; toolName: string };
   isHeadless: boolean;
   history?: ChatHistoryItem[];
   cwd?: string;
@@ -202,12 +236,23 @@ export async function evaluateWithCoreRules(
   const useReviewer = !!input.autoReview;
   if (!permissions && !useReviewer && !input.approval) return undefined;
   const call = toCoreCall(cliToolName, args);
-  if (!call) return undefined;
+  const mcp = input.mcp ?? call?.mcp;
+  if (!call && !mcp) return undefined;
 
-  const tool = {
-    group: "Built-In",
-    evaluateToolCallPolicy: input.evaluateToolCallPolicy as never,
-  };
+  const tool = mcp
+    ? {
+        group: mcp.serverName,
+        originalFunctionName: mcp.toolName,
+        uri: `mcp:${mcp.serverName}`,
+        evaluateToolCallPolicy: input.evaluateToolCallPolicy as never,
+      }
+    : {
+        group: "Built-In",
+        evaluateToolCallPolicy: input.evaluateToolCallPolicy as never,
+      };
+  const toolName =
+    call?.toolName ?? mcpRuleName(mcp!.serverName, mcp!.toolName);
+  const parsedArgs = call?.parsedArgs ?? args;
   const basePolicy = toToolPolicy(cliPermission);
 
   if (useReviewer) {
@@ -226,9 +271,9 @@ export async function evaluateWithCoreRules(
       },
       {
         sessionId: SESSION_ID,
-        toolName: call.toolName,
+        toolName,
         basePolicy,
-        parsedArgs: call.parsedArgs,
+        parsedArgs,
         history: buildReviewHistory(input.history ?? []),
         approval: input.approval,
         headless: isHeadless,
@@ -240,14 +285,19 @@ export async function evaluateWithCoreRules(
       by: reply.by,
       category: reply.category,
     });
-    return { decision: reply.decision, reason: reply.reason, by: reply.by };
+    return {
+      decision: reply.decision,
+      reason: reply.reason,
+      by: reply.by,
+      source: reply.ruleSource,
+    };
   }
 
   const result: ToolPolicyResult = evaluateToolPolicyWithRules({
     tool: tool as never,
-    toolName: call.toolName,
+    toolName,
     basePolicy,
-    parsedArgs: call.parsedArgs,
+    parsedArgs,
     permissions,
     approval: input.approval,
     cwd: input.cwd ?? process.cwd(),
@@ -263,5 +313,34 @@ export async function evaluateWithCoreRules(
           : "allow",
     reason: result.reason,
     by: "rules",
+    source: result.source,
   };
+}
+
+/**
+ * At the default levels, core may only loosen what the CLI already decided,
+ * except a refusal, a floor rule or a protected path: those stand in headless
+ * runs too, where the CLI's own policy would otherwise allow the call.
+ */
+export function keepCoreVerdict(
+  verdict: CoreVerdict | undefined,
+  opts: {
+    defaultsOnly: boolean;
+    hasPermissions: boolean;
+    autoReview: boolean;
+  },
+): CoreVerdict | undefined {
+  if (!verdict) return undefined;
+  if (
+    verdict.decision === "deny" ||
+    verdict.source === "floor" ||
+    verdict.source === "protected-path" ||
+    verdict.source === "safety-floor"
+  ) {
+    return verdict;
+  }
+  if (opts.defaultsOnly && !opts.hasPermissions && !opts.autoReview) {
+    return verdict.decision === "allow" ? verdict : undefined;
+  }
+  return verdict;
 }

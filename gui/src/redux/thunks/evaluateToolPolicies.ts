@@ -3,8 +3,11 @@ import { ChatHistoryItem, MessageModes, Tool, ToolCallState } from "core";
 import {
   levelOfCall,
   type ApprovalSettings,
+  type CallContext,
 } from "core/tools/permissions/approval";
+import { resolveShell } from "core/util/shell";
 import type { AutoReviewReply } from "core/tools/permissions/auto/handler";
+import { userTextForReview } from "core/tools/permissions/auto/history";
 import type { ReviewHistory } from "core/tools/permissions/auto/prompt";
 import { isFlaggedOutput } from "core/tools/permissions/injection";
 import type { DecisionSource } from "core/tools/permissions/decide";
@@ -50,6 +53,27 @@ export const PLAN_MODE_HOLD_REASON =
   "Plan mode asks before a tool that may make changes. Only tools marked read-only run on their own.";
 
 /**
+ * Arguments for the area lookup. A read-only command is Context use only when
+ * the shell that will run it is known; the webview does not have that shell,
+ * and then the caller lets core classify the call.
+ */
+function callContextFor(toolCallState: {
+  parsedArgs?: Record<string, unknown>;
+}): CallContext {
+  const parsedArgs = toolCallState.parsedArgs;
+  const platform =
+    typeof process !== "undefined" ? process.platform : undefined;
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
+    return { parsedArgs };
+  }
+  try {
+    return { parsedArgs, cwd: process.cwd(), shell: resolveShell().kind };
+  } catch {
+    return { parsedArgs };
+  }
+}
+
+/**
  * Plan mode only reads. Built-in tools that write are not offered in it, but
  * other tools (MCP servers) are, and they keep their own policies; one set to
  * run on its own, or allowed by a rule or approval mode, would change things
@@ -70,7 +94,13 @@ export function holdInPlanMode(
   if (result.readOnly) return result;
   // An area set to YOLO runs everything, in Plan mode too: that is what the
   // level says. Permissive and below still wait for the person here.
-  if (levelOfCall(approval, name, tool)?.level === "yolo") return result;
+  // The call's arguments matter: a vouched read-only command is Context use.
+  if (
+    levelOfCall(approval, name, tool, callContextFor(result.toolCallState))
+      ?.level === "yolo"
+  ) {
+    return result;
+  }
   return {
     ...result,
     policy: "allowedWithPermission",
@@ -137,11 +167,18 @@ async function evaluateBasePolicy(
         if (source === "protected-path") {
           return { ...result.content, toolCallState };
         }
+      } else {
+        // Core could not decide. Waiting is the closed failure: a deny rule,
+        // a floor rule or a protected path may have been missed.
+        console.error(
+          `Error evaluating tool policy for ${toolName}`,
+          result.error,
+        );
+        return editUnchecked(toolCallState);
       }
     } catch (e) {
-      // Edits never depended on core before, so an unreachable core must not
-      // stop them now. The diff review is still the user's check.
       console.error(`Could not check rules for ${toolName}`, e);
+      return editUnchecked(toolCallState);
     }
     return { policy: "allowedWithoutPermission", toolCallState };
   }
@@ -190,6 +227,17 @@ async function evaluateBasePolicy(
   return { ...details, policy: dynamicPolicy, toolCallState };
 }
 
+/** An edit whose rules could not be checked waits for the person. */
+function editUnchecked(toolCallState: ToolCallState): EvaluatedPolicy {
+  return {
+    policy: "allowedWithPermission",
+    source: "manual",
+    reason:
+      "Could not check this edit against your rules, so it waits for you.",
+    toolCallState,
+  };
+}
+
 /**
  * What the reviewer is shown of the conversation: the user's own messages and
  * the earlier tool calls (name and arguments), never the agent's prose or any
@@ -201,12 +249,7 @@ export function buildReviewHistory(history: ChatHistoryItem[]): ReviewHistory {
   for (const item of history) {
     const { message } = item;
     if (message.role === "user") {
-      const text =
-        typeof message.content === "string"
-          ? message.content
-          : message.content
-              .map((p) => (p.type === "text" ? p.text : ""))
-              .join("");
+      const text = userTextForReview(item);
       if (text.trim()) userMessages.push(text);
     }
     for (const call of item.toolCallStates ?? []) {
@@ -251,12 +294,12 @@ async function reviewOpenCalls(
         // Manual asks every time; only an area set to Automatic has a reviewer
         r.source !== "manual";
       if (!open) return r;
-      const found = levelOfCall(
-        approval,
-        toolName,
-        activeTools.find((t) => t.function.name === toolName),
-      );
-      if (found && found.level !== "automatic") return r;
+      const tool = activeTools.find((t) => t.function.name === toolName);
+      const call = callContextFor(r.toolCallState);
+      const found = levelOfCall(approval, toolName, tool, call);
+      // Without a shell the area of a terminal command is not known here.
+      // Core classifies it, so a read-only command can still be reviewed.
+      if (call.shell && found && found.level !== "automatic") return r;
 
       const basePolicy =
         toolPolicies[toolName] ??

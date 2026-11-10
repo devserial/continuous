@@ -3,6 +3,10 @@ import type { ConfigHandler } from "core/config/ConfigHandler";
 import * as vscode from "vscode";
 
 import { runAgentTurn } from "./agentLoop";
+import {
+  agentSessionApproval,
+  decideAgentSessionTool,
+} from "./agentSessionPolicy";
 import { toContinuedTool } from "./languageModelChatProvider";
 
 /**
@@ -122,6 +126,28 @@ export function registerAgentSessions(
             isCancelled: () => token.isCancellationRequested,
             signal: abort.signal,
             invokeTool: async (name, input) => {
+              const args =
+                input && typeof input === "object"
+                  ? (input as Record<string, unknown>)
+                  : {};
+              const { config: fresh } = await configHandler.loadConfig();
+              const verdict = decideAgentSessionTool(name, args, {
+                permissions: fresh?.toolPermissions,
+                approval: agentSessionApproval(),
+                cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+              });
+              if (verdict.policy === "disabled") {
+                return `Refused by Continuous permissions: ${verdict.reason ?? "a rule blocked this call."}`;
+              }
+              if (verdict.policy !== "allowedWithoutPermission") {
+                const ok = await confirmAgentTool(
+                  stream,
+                  verdict.reason ?? `Allow ${name}?`,
+                );
+                if (!ok) {
+                  return `Not run: ${verdict.reason ?? "Continuous asked before this call, and it was not approved."}`;
+                }
+              }
               const result = await vscode.lm.invokeTool(
                 name,
                 { input, toolInvocationToken: request.toolInvocationToken },
@@ -170,6 +196,33 @@ export function registerAgentSessions(
     return true;
   } catch (e) {
     console.warn("Continuous: the Agents window integration is unavailable", e);
+    return false;
+  }
+}
+
+/**
+ * Ask through the Agents window when the API can. With no way to ask, the
+ * call does not run.
+ */
+async function confirmAgentTool(
+  stream: vscode.ChatResponseStream,
+  message: string,
+): Promise<boolean> {
+  const confirmation = (
+    stream as {
+      confirmation?: (
+        title: string,
+        message: string,
+        data?: unknown,
+      ) => Thenable<boolean | undefined>;
+    }
+  ).confirmation;
+  if (typeof confirmation !== "function") return false;
+  try {
+    return (
+      (await confirmation.call(stream, "Continuous", message, {})) === true
+    );
+  } catch {
     return false;
   }
 }

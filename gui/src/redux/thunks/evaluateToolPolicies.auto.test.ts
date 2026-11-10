@@ -292,6 +292,54 @@ describe("approval modes in evaluateToolPolicies", () => {
     expect(result.policy).toBe(OFF);
   });
 
+  it("reviews a read-only command when Context is Automatic and Tools is Cautious", async () => {
+    const ide = new MockIdeMessenger();
+    ide.responseHandlers["tools/evaluatePolicy"] = async () =>
+      ({ policy: ASK, source: "tool-setting" }) as any;
+    const review = vi.fn(async () => ({
+      decision: "allow",
+      reason: "Only lists files.",
+      by: "reviewer",
+    }));
+    ide.responseHandlers["tools/autoReview"] = review as any;
+    const [readOnly] = await evaluateToolPolicies(
+      vi.fn() as any,
+      ide,
+      [],
+      [call("run_terminal_command", { command: "ls" })],
+      {},
+      auto,
+      {
+        levels: {
+          ...DEFAULT_POLICY_LEVELS,
+          context: "automatic",
+          tools: "cautious",
+        },
+      },
+    );
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(readOnly.policy).toBe(ALLOW);
+
+    review.mockClear();
+    const [writing] = await evaluateToolPolicies(
+      vi.fn() as any,
+      ide,
+      [],
+      [call("run_terminal_command", { command: "rm -rf build" })],
+      {},
+      auto,
+      {
+        levels: {
+          ...DEFAULT_POLICY_LEVELS,
+          context: "automatic",
+          tools: "cautious",
+        },
+      },
+    );
+    expect(review).not.toHaveBeenCalled();
+    expect(writing.policy).toBe(ASK);
+  });
+
   it("without approval settings nothing is sent and an unexplained loosening is ignored", async () => {
     const ide = new MockIdeMessenger();
     const seen: any[] = [];

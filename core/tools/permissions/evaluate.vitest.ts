@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { evaluateToolPolicyWithRules } from "./evaluate";
 import { evaluateTerminalCommandSecurity } from "@continuedev/terminal-security";
+import { evaluateToolPolicyWithRules } from "./evaluate";
+import { POLICY_PRESETS } from "./policy";
 
 const ASK = "allowedWithPermission" as const;
 const ALLOW = "allowedWithoutPermission" as const;
@@ -145,6 +146,25 @@ describe("file tools", () => {
       "file:///C:/proj/app/.env",
     );
     expect(r.policy).toBe(OFF);
+  });
+});
+
+describe("candidate cap", () => {
+  it("a floor rule still refuses a padded command at YOLO", () => {
+    const pad = Array.from({ length: 900 }, (_, i) => `f${i}`).join(" ");
+    const r = evaluateToolPolicyWithRules({
+      tool: terminalTool as any,
+      toolName: "run_terminal_command",
+      basePolicy: ALLOW,
+      parsedArgs: { command: `ls ${pad}; git push` },
+      permissions: undefined,
+      approval: {
+        levels: POLICY_PRESETS.yolo.levels,
+        floor: ["runTerminalCommand(git push*)"],
+      },
+    });
+    expect(r.policy).toBe(OFF);
+    expect(r.source).toBe("floor");
   });
 });
 

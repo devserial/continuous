@@ -1,7 +1,13 @@
 import type { LoopReminder, LoopState, TaskPlan } from "core/index.js";
+import type { PolicyLevels } from "core/tools/permissions/policy.js";
 import type { ParallelRunResult } from "core/util/loopMode.js";
 
 import { captureWorktreeDiff } from "../commands/review/worktree.js";
+import {
+  loadPolicyFile,
+  setPolicyLevels,
+} from "../permissions/policyLevels.js";
+import type { PermissionMode } from "../permissions/types.js";
 import {
   applyModelNamed,
   getService,
@@ -35,11 +41,58 @@ import { streamChatResponse } from "../stream/streamChatResponse.js";
 
 export const LOOP_WORKER_FLAG = "--internal-loop-worker";
 
+/**
+ * The parent's permission choices. A worker is its own process, so it does
+ * not see the parent's flags or policy levels unless they are sent.
+ * `mode: "auto"` is not forwarded: that mode replaces every policy, and a
+ * worker must still honor deny rules, protected paths and the floor.
+ */
+export interface LoopWorkerPolicy {
+  mode?: PermissionMode;
+  allow?: string[];
+  ask?: string[];
+  exclude?: string[];
+  levels?: PolicyLevels;
+}
+
+/** Overrides for the worker's tool service. Auto is never the mode. */
+export function loopWorkerPermissionOverrides(policy?: LoopWorkerPolicy): {
+  allow?: string[];
+  ask?: string[];
+  exclude?: string[];
+  mode: "normal" | "plan";
+} {
+  return {
+    allow: policy?.allow,
+    ask: policy?.ask,
+    exclude: policy?.exclude,
+    mode: policy?.mode === "plan" ? "plan" : "normal",
+  };
+}
+
+/**
+ * Load the shared settings file, then the parent's levels, which win over the
+ * file the way `--policy` does in the parent.
+ */
+export function applyLoopWorkerPolicy(
+  policy?: LoopWorkerPolicy,
+  file?: string,
+): void {
+  loadPolicyFile(file);
+  if (policy?.levels) setPolicyLevels(policy.levels);
+}
+
 export interface LoopWorkerInput {
   /** The worktree the item runs in; the worker changes into it */
   worktree: string;
   /** The parent's config options, so the worker loads the same assistant */
-  options: { config?: string; org?: string; rule?: string[] };
+  options: {
+    config?: string;
+    org?: string;
+    rule?: string[];
+    /** The parent's policies. Absent in a worker started by an older parent. */
+    policy?: LoopWorkerPolicy;
+  };
   /** The `name` of the chat model to run on (the item's own, or the loop's) */
   model?: string;
   /** The parent's loop, `current` naming this item (kind "item") */
@@ -75,7 +128,8 @@ const EMPTY_USAGE = { promptTokens: 0, completionTokens: 0 };
 
 /**
  * Runs the item in this process, which is the worker: services start in
- * the worktree in auto mode (nobody can be asked), the model is switched to
+ * the worktree under the parent's policies (auto is not forwarded, and a
+ * headless ask is refused), the model is switched to
  * the one the parent named, the session is seeded with the loop and the
  * plan, and the turn runs to its end. The session file the run saved is
  * removed afterwards: the worker's conversation is not one of the person's.
@@ -89,6 +143,7 @@ export async function runLoopItemHere(
     throw new Error("The worker's loop does not name the item to run.");
   }
   process.chdir(input.worktree);
+  applyLoopWorkerPolicy(input.options.policy);
   await initializeServices({
     options: {
       config: input.options.config,
@@ -96,7 +151,9 @@ export async function runLoopItemHere(
       rule: input.options.rule,
     },
     headless: true,
-    toolPermissionOverrides: { mode: "auto" },
+    toolPermissionOverrides: loopWorkerPermissionOverrides(
+      input.options.policy,
+    ),
   });
   if (input.model) await applyModelNamed(input.model);
   const modelState = await getService<ModelServiceState>(SERVICE_NAMES.MODEL);

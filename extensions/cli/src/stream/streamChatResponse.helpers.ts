@@ -13,6 +13,7 @@ import type { ModelServiceState } from "src/services/types.js";
 import { holdLoopCall, loopRepeatGuard } from "../loop/loopHolds.js";
 import {
   evaluateWithCoreRules,
+  keepCoreVerdict,
   getReviewer,
   isAutoReviewEnabled,
   type CoreVerdict,
@@ -176,13 +177,14 @@ async function coreRulesVerdict(
     );
     const assistant = modelState?.assistant;
     const permissions = assistant?.toolPermissions;
-    // The levels reach core's engine. At the defaults nothing else changes
-    // what the CLI does, so the engine may only loosen there (Context
-    // Permissive lets a command that only reads run without asking) and
-    // never tighten: a protected path or a refusal keeps the CLI's own answer.
+    // The levels reach core's engine. At the defaults the engine may loosen
+    // (Context Permissive lets a command that only reads run without asking).
+    // A refusal, a floor rule or a protected path still tightens, including
+    // in headless runs whose own policy would allow the call.
     const levels = effectiveLevels(currentPermissionMode());
     const approval = { levels, ...approvalExtras() };
     const defaultsOnly = policyIsDefault(levels);
+    const mcpServer = toolCall.tool?.mcpServer;
     const verdict = await evaluateWithCoreRules({
       cliToolName: toolCall.name,
       args: toolCall.arguments,
@@ -197,12 +199,15 @@ async function coreRulesVerdict(
           : null,
       isHeadless: !!isHeadless,
       history: autoReview ? services.chatHistory.getHistory() : undefined,
+      ...(mcpServer
+        ? { mcp: { serverName: mcpServer, toolName: toolCall.name } }
+        : {}),
     });
-    return defaultsOnly && !permissions && !autoReview
-      ? verdict?.decision === "allow"
-        ? verdict
-        : undefined
-      : verdict;
+    return keepCoreVerdict(verdict, {
+      defaultsOnly,
+      hasPermissions: !!permissions,
+      autoReview,
+    });
   } catch (e) {
     logger.warn("Could not apply toolPermissions rules", { error: e });
     // Fail toward asking, and toward refusing when nobody can be asked.

@@ -24,6 +24,8 @@ import { readFileTool } from "../../../tools/definitions/readFile";
 import { viewRepoMapTool } from "../../../tools/definitions/viewRepoMap";
 import { viewSubdirectoryTool } from "../../../tools/definitions/viewSubdirectory";
 
+import { retrievalToolAllowed } from "./retrievalPolicy";
+
 const DEFAULT_CHUNK_SIZE = 384;
 
 const AVAILABLE_TOOLS: Tool[] = [
@@ -267,9 +269,15 @@ Determine which tools should be used to answer this query. You should feel free 
     for (const toolCall of toolCalls) {
       const tool = AVAILABLE_TOOLS.find(
         (t) => t.function.name === toolCall.name,
-      )!;
+      );
+      if (!tool) continue;
 
-      const args = toolCall.args;
+      const args = toolCall.args ?? {};
+      if (
+        !retrievalToolAllowed(tool, args, this.options.config.toolPermissions)
+      ) {
+        continue;
+      }
       if (toolCall.name === BuiltInToolNames.GrepSearch) {
         args.splitByFile = true;
       }

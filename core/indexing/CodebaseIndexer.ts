@@ -55,6 +55,8 @@ export class CodebaseIndexer {
   // We normally allow this to run in the background,
   // and only need to `await` it for tests.
   public initPromise: Promise<void>;
+  /** The index refresh started by the latest config update, so callers can settle it. */
+  public refreshPromise: Promise<void> = Promise.resolve();
   private config!: ContinueConfig;
   private indexingCancellationController: AbortController;
   private codebaseIndexingState: IndexingProgressUpdate;
@@ -866,7 +868,9 @@ export class CodebaseIndexer {
 
       if (needsReindex) {
         const dirs = await this.ide.getWorkspaceDirs();
-        void this.refreshCodebaseIndex(dirs);
+        // Kept, not only fired: a refresh that logs after its tests have
+        // finished makes Jest exit with a failure.
+        this.refreshPromise = this.refreshCodebaseIndex(dirs);
       }
     }
   }

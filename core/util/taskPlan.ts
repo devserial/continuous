@@ -5,6 +5,11 @@ import type {
   TaskStatus,
   UserChatMessage,
 } from "../index.js";
+import {
+  formatItemBudget,
+  parseItemBudget,
+  type ItemBudget,
+} from "./itemBudget";
 
 /**
  * The agent's task list: validation, the block sent at the tail of each
@@ -85,6 +90,8 @@ export interface TaskItemInput {
   model?: unknown;
   /** The files the item changes (TaskItem.files): a list, or one comma-separated line */
   files?: unknown;
+  /** What the item may use (TaskItem.budget): a line such as `25 turns, 200K tokens`, or an object */
+  budget?: unknown;
 }
 
 export type TaskPlanResult =
@@ -145,6 +152,11 @@ export function buildTaskPlan(
      * six to-dos of a plan.
      */
     keepOpen?: boolean;
+    /**
+     * While a loop item is running, the model cannot change a check that
+     * already exists. The check is what marks the item done.
+     */
+    lockChecks?: boolean;
   } = {},
 ): TaskPlanResult {
   if (!Array.isArray(input)) {
@@ -316,7 +328,9 @@ export function buildTaskPlan(
   return {
     ok: true,
     plan: {
-      items: finalItems,
+      items: options.lockChecks
+        ? lockExistingChecks(finalItems, previousItems)
+        : finalItems,
       updatedAt: (options.now ?? new Date()).toISOString(),
       updatedBy: options.updatedBy ?? "model",
     },
@@ -370,6 +384,19 @@ function withOmittedItems(
  * what the update did not say, the rest stay, and new items go last. An item
  * left out stops being in progress when the update names another that is.
  */
+/** A loop item's check stays as it was when the run started. */
+function lockExistingChecks(
+  items: TaskItem[],
+  previous: TaskItem[],
+): TaskItem[] {
+  const prev = new Map(previous.map((item) => [item.id, item]));
+  return items.map((item) => {
+    const old = prev.get(item.id);
+    if (old?.check === undefined || item.check === old.check) return item;
+    return { ...item, check: old.check };
+  });
+}
+
 function mergeIntoPrevious(
   previous: TaskItem[],
   items: TaskItem[],
@@ -394,7 +421,12 @@ function itemExtras(
   count: number,
 ):
   | {
-      fields: { check?: string; model?: string; files?: string[] };
+      fields: {
+        check?: string;
+        model?: string;
+        files?: string[];
+        budget?: ItemBudget;
+      };
       after: number[];
     }
   | { error: string } {
@@ -414,16 +446,46 @@ function itemExtras(
   if (model.error) return { error: model.error };
   const files = fileList(raw.files, position);
   if (typeof files === "string") return { error: files };
+  const budget = itemBudgetOf(raw.budget, position);
+  if (typeof budget === "string") return { error: budget };
   const after = afterList(raw.after, position, count);
   if (typeof after === "string") return { error: after };
   return {
     fields: {
+      ...(budget && { budget }),
       ...(check.value && { check: check.value.replace(/\s*\n\s*/g, " ") }),
       ...(model.value && { model: model.value.replace(/\s+/g, " ") }),
       ...(files.length && { files }),
     },
     after,
   };
+}
+
+/** An item's budget from its line or object, or why it is invalid; undefined for none. */
+function itemBudgetOf(
+  raw: unknown,
+  position: number,
+): ItemBudget | string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw === "string") {
+    const parsed = parseItemBudget(raw);
+    return parsed.ok ? parsed.budget : `Item ${position}: ${parsed.error}`;
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    const parsed = parseItemBudget(
+      [
+        o.turns !== undefined ? `${o.turns} turns` : "",
+        o.tokens !== undefined ? `${o.tokens} tokens` : "",
+        o.minutes !== undefined ? `${o.minutes} min` : "",
+        o.usd !== undefined ? `$${o.usd}` : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+    );
+    return parsed.ok ? parsed.budget : `Item ${position}: ${parsed.error}`;
+  }
+  return `Item ${position}: budget must be a line such as "25 turns, 200K tokens, 20 min"`;
 }
 
 const BACKSLASH = String.fromCharCode(92);
@@ -704,7 +766,7 @@ export function parseMarkdownChecklist(markdown: string): TaskItemInput[] {
     if (attribute && items.length > 0) {
       const last = items[items.length - 1];
       const key = attribute[1].toLowerCase() as
-        "after" | "check" | "model" | "files";
+        "after" | "check" | "model" | "files" | "budget";
       last[key] = attribute[2].trim();
       continue;
     }
@@ -731,7 +793,8 @@ export function parseMarkdownChecklist(markdown: string): TaskItemInput[] {
 }
 
 /** An indented `after:`, `check:`, `model:` or `files:` line under a to-do. */
-const ITEM_ATTRIBUTE = /^(?:\t|\s{2,})(after|check|model|files)\s*:\s*(.*)$/i;
+const ITEM_ATTRIBUTE =
+  /^(?:\t|\s{2,})(after|check|model|files|budget)\s*:\s*(.*)$/i;
 
 /** The lines a plan file writes under a to-do for its `after`, `check`, `model` and `files`. */
 export function taskItemAttributeLines(
@@ -746,6 +809,9 @@ export function taskItemAttributeLines(
   if (item.check) lines.push(`  check: ${item.check}`);
   if (item.model) lines.push(`  model: ${item.model}`);
   if (item.files?.length) lines.push(`  files: ${item.files.join(", ")}`);
+  if (item.budget && Object.keys(item.budget).length) {
+    lines.push(`  budget: ${formatItemBudget(item.budget)}`);
+  }
   return lines;
 }
 

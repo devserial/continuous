@@ -12,7 +12,11 @@
   </defs>
   <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bg)"/>
   <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#shine)"/>
-  <path d="M256 256 C300 172 412 172 412 256 C412 340 300 340 256 256 C212 172 100 172 100 256 C100 340 212 340 256 256 Z" fill="none" stroke="#EEF2FF" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="350.5" cy="193" r="32" fill="#A5F3FC"/>
+  <g fill="none" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 256 C212 172 100 172 100 256 C100 340 212 340 256 256" stroke="#22D3EE"/>
+    <path d="M256 256 C300 172 412 172 412 256 C412 340 300 340 256 256" stroke="#F5F3FF"/>
+  </g>
+  <circle cx="161.5" cy="319" r="30" fill="#F5F3FF"/>
+  <circle cx="350.5" cy="193" r="30" fill="#22D3EE"/>
   <text x="560" y="330" fill="#CED0D6" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="210" font-weight="600">Continuous</text>
 </svg>

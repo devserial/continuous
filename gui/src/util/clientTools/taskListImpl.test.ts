@@ -3,12 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 import { ClientToolExtras } from "./callClientTool";
 import { taskListImpl } from "./taskListImpl";
 
-function extras(taskPlan?: TaskPlan) {
+function extras(taskPlan?: TaskPlan, itemRunning = false) {
   const dispatch = vi.fn();
   return {
     dispatch,
     extras: {
-      getState: () => ({ session: { taskPlan } }),
+      getState: () => ({
+        session: {
+          taskPlan,
+          loop: itemRunning
+            ? { current: { kind: "item", itemId: "1" } }
+            : undefined,
+        },
+      }),
       dispatch,
       ideMessenger: {},
     } as unknown as ClientToolExtras,
@@ -96,5 +103,37 @@ describe("taskListImpl", () => {
     expect(
       dispatch.mock.calls[0][0].payload.items.map((i: any) => i.id),
     ).toEqual(["1", "2"]);
+  });
+
+  it("does not let a running loop item replace its check", async () => {
+    const { dispatch, extras: x } = extras(
+      {
+        items: [
+          {
+            id: "1",
+            text: "Add slugify",
+            status: "in_progress",
+            check: "npm test",
+          },
+        ],
+        updatedAt: "",
+      },
+      true,
+    );
+    await taskListImpl(
+      {
+        items: [
+          {
+            id: "1",
+            text: "Add slugify",
+            status: "in_progress",
+            check: "true",
+          },
+        ],
+      },
+      "call-1",
+      x,
+    );
+    expect(dispatch.mock.calls[0][0].payload.items[0].check).toBe("npm test");
   });
 });

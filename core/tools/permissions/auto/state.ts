@@ -1,5 +1,22 @@
+import { createHash } from "node:crypto";
+
 import type { ToolPermissions } from "../rules";
 import type { ReviewResult } from "./parse";
+
+/**
+ * What the person has said, folded into the cache key. An earlier approval
+ * does not apply after a later message.
+ */
+export function reviewContextKey(userMessages: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const message of userMessages) {
+    hash.update(String(message.length));
+    hash.update("\0");
+    hash.update(message);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
 
 export const DEFAULT_CONSECUTIVE_DENIALS = 3;
 export const DEFAULT_TOTAL_DENIALS = 20;
@@ -28,19 +45,32 @@ export class AutoReviewState {
   private total = 0;
   private cache = new Map<string, ReviewResult>();
 
-  /** An earlier model answer for an identical call, if any. */
-  cached(toolName: string, args: unknown): ReviewResult | undefined {
-    return this.cache.get(`${toolName}\u0000${stableStringify(args)}`);
+  /** An earlier model answer for an identical call in the same conversation, if any. */
+  cached(
+    toolName: string,
+    args: unknown,
+    context = "",
+  ): ReviewResult | undefined {
+    return this.cache.get(this.key(toolName, args, context));
   }
 
   /** Remember an answer that came from the model (not an error or a cap). */
-  remember(toolName: string, args: unknown, result: ReviewResult): void {
+  remember(
+    toolName: string,
+    args: unknown,
+    result: ReviewResult,
+    context = "",
+  ): void {
     if (result.category === "reviewer-unavailable") return;
     if (this.cache.size >= MAX_CACHE) {
       const oldest = this.cache.keys().next().value;
       if (oldest !== undefined) this.cache.delete(oldest);
     }
-    this.cache.set(`${toolName}\u0000${stableStringify(args)}`, result);
+    this.cache.set(this.key(toolName, args, context), result);
+  }
+
+  private key(toolName: string, args: unknown, context: string): string {
+    return `${toolName}\u0000${context}\u0000${stableStringify(args)}`;
   }
 
   /**

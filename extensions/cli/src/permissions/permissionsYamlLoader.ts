@@ -78,7 +78,7 @@ export function loadPermissionsYaml(
  * Parses a pattern string into a ToolPermissionPolicy
  * Supports formats like:
  * - "Write" -> { tool: "Write", permission }
- * - "Write(pattern)" -> { tool: "Write", permission, argumentMatches: { file_path: "pattern" } }
+ * - "Write(pattern)" -> { tool: "Write", permission, argumentMatches: { filepath: "pattern" } }
  * - "Bash(npm install)" -> { tool: "Bash", permission, argumentMatches: { command: "npm install" } }
  */
 export function parseToolPattern(
@@ -101,16 +101,18 @@ export function parseToolPattern(
   if (args) {
     const trimmedArgs = args.trim();
     if (trimmedArgs) {
-      // Map tool names to their primary argument parameter
+      // The key is the tool's real parameter name (see each tool's schema).
+      // Edit and MultiEdit take file_path; Write and Read take filepath.
       const toolArgMappings: Record<string, string> = {
-        Write: "file_path",
+        Write: "filepath",
         Edit: "file_path",
-        Read: "file_path",
-        List: "path",
-        Search: "query",
+        MultiEdit: "file_path",
+        Read: "filepath",
+        List: "dirpath",
+        Search: "pattern",
         Bash: "command",
         Fetch: "url",
-        Diff: "file_path",
+        Diff: "path",
       };
 
       const argKey = toolArgMappings[normalizedName] || "pattern";

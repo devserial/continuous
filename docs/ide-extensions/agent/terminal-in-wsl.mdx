@@ -25,6 +25,20 @@ continuous
 - **The directory.** A command starts in the workspace folder. A Windows drive appears as `/mnt/c`, `/mnt/d` and so on; a workspace inside the distribution (`\\wsl.localhost\Ubuntu\home\you\project`) appears as its Linux path.
 - **The command text.** The command reaches bash exactly as written, including quoted heredocs, `$`, backslashes and non-ASCII text. `wsl.exe` does not pass a command line through unchanged, so Continuous sends the command encoded and decodes it inside the distribution. Standard input, `exit` codes and `cd` behave as in `bash -c`.
 
+## If WSL is not installed
+
+The setting only applies on Windows; on macOS and Linux it is ignored and the default shell is used.
+
+On Windows without a WSL distribution, commands are not run, and are not sent to PowerShell instead. The agent receives a message and VS Code shows a notice with **Copy install command**. Open PowerShell as administrator, run:
+
+```powershell
+wsl --install
+```
+
+This enables WSL and installs Ubuntu; restart when asked and finish the distribution's first-run setup (a user name and password). `wsl --list --online` lists other distributions and `wsl --install -d <name>` installs one. It needs Windows 10 version 2004 (build 19041) or later, or Windows 11. See [Install WSL](https://learn.microsoft.com/windows/wsl/install). Continuous never installs WSL or runs the command for you, because it needs an administrator terminal and a restart.
+
+Distributions are read from the registry, not by running `wsl.exe`: on a machine without WSL, `wsl.exe` opens an installer window when run. A name in `continuous.terminal.wslDistro` that is not installed gives a message listing the ones that are. Docker Desktop's own `docker-desktop` distribution is not offered.
+
 ## Limits
 
 - A command longer than about 24,000 characters fails to start, because a Windows command line is limited to about 32,000 characters. Write large files with the edit tool instead.

@@ -205,7 +205,7 @@ describe("evaluateToolPolicies: edit tools", () => {
     );
   });
 
-  it("if core cannot be reached, an edit proceeds as it always did", async () => {
+  it("if core cannot be reached, the edit waits instead of being applied", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const ide = new MockIdeMessenger();
     ide.responseHandlers["tools/evaluatePolicy"] = async () => {
@@ -218,11 +218,13 @@ describe("evaluateToolPolicies: edit tools", () => {
       [call("edit_existing_file")],
       {},
     );
-    expect(result.policy).toBe(ALLOW);
+    expect(result.policy).toBe(ASK);
+    expect(result.reason).toMatch(/waits for you/);
     spy.mockRestore();
   });
 
-  it("a request that returns an error status also leaves the edit allowed", async () => {
+  it("a request that returns an error status also holds the edit", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const ide = new MockIdeMessenger();
     vi.spyOn(ide, "request").mockResolvedValue({
       status: "error",
@@ -235,6 +237,8 @@ describe("evaluateToolPolicies: edit tools", () => {
       [call("single_find_and_replace")],
       {},
     );
-    expect(result.policy).toBe(ALLOW);
+    expect(result.policy).toBe(ASK);
+    expect(result.reason).toMatch(/waits for you/);
+    spy.mockRestore();
   });
 });

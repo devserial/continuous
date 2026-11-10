@@ -1,8 +1,10 @@
 import { evaluateTerminalCommandSecurity } from "@continuedev/terminal-security";
+import { DEFAULT_POLICY_LEVELS } from "core/tools/permissions/policy.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   evaluateWithCoreRules,
+  keepCoreVerdict,
   setAutoReviewEnabled,
   toCoreCall,
   reviewerModel,
@@ -60,8 +62,16 @@ describe("toCoreCall", () => {
       query: "p",
     });
   });
-  it("has no mapping for MCP and other tools", () => {
+  it("has no mapping for a tool that is not built in and not an MCP name", () => {
     expect(toCoreCall("some_mcp_tool", {})).toBeUndefined();
+  });
+
+  it("maps an mcp__server__tool name onto the core MCP call", () => {
+    expect(toCoreCall("mcp__github__create_issue", { title: "x" })).toEqual({
+      toolName: "mcp__github__create_issue",
+      parsedArgs: { title: "x" },
+      mcp: { serverName: "github", toolName: "create_issue" },
+    });
   });
 });
 
@@ -131,6 +141,22 @@ describe("rules from config.yaml in the CLI", () => {
 
   it("the safety floor still refuses a command the CLI policy allows", async () => {
     expect((await run("rm -rf /"))?.decision).toBe("deny");
+  });
+
+  it("a floor rule on an MCP tool binds when the server is known", async () => {
+    const v = await evaluateWithCoreRules({
+      cliToolName: "create_issue",
+      args: { title: "x" },
+      cliPermission: "allow",
+      assistantPermissions: undefined,
+      approval: {
+        levels: DEFAULT_POLICY_LEVELS,
+        floor: ["mcp__github__*"],
+      },
+      mcp: { serverName: "GitHub", toolName: "create_issue" },
+      isHeadless: true,
+    });
+    expect(v).toMatchObject({ decision: "deny", source: "floor", by: "rules" });
   });
 
   it("file rules use the CLI Read tool's path", async () => {
@@ -267,5 +293,49 @@ describe("reviewerModel", () => {
       } as any)?.name,
     ).toBe("Judge");
     expect(reviewerModel({ models: [chat] } as any)).toBeUndefined();
+  });
+});
+
+describe("keepCoreVerdict", () => {
+  const defaults = {
+    defaultsOnly: true,
+    hasPermissions: false,
+    autoReview: false,
+  };
+
+  it("keeps a refusal, a floor rule and a protected path at the defaults", () => {
+    expect(
+      keepCoreVerdict(
+        { decision: "deny", by: "rules", source: "safety-floor" },
+        defaults,
+      )?.decision,
+    ).toBe("deny");
+    expect(
+      keepCoreVerdict(
+        { decision: "deny", by: "rules", source: "floor" },
+        defaults,
+      )?.source,
+    ).toBe("floor");
+    expect(
+      keepCoreVerdict(
+        { decision: "ask", by: "rules", source: "protected-path" },
+        defaults,
+      )?.decision,
+    ).toBe("ask");
+  });
+
+  it("still drops an ordinary ask at the defaults", () => {
+    expect(
+      keepCoreVerdict(
+        { decision: "ask", by: "rules", source: "tool-setting" },
+        defaults,
+      ),
+    ).toBeUndefined();
+    expect(
+      keepCoreVerdict(
+        { decision: "allow", by: "rules", source: "permissive" },
+        defaults,
+      )?.decision,
+    ).toBe("allow");
   });
 });

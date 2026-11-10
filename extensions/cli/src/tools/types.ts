@@ -70,6 +70,8 @@ export interface Tool {
   run: (args: any, context?: ToolRunContext) => Promise<string>;
   readonly?: boolean; // Indicates if the tool is readonly
   isBuiltIn: boolean;
+  /** MCP server this tool belongs to, so floor rules on `mcp__server__*` apply. */
+  mcpServer?: string;
   evaluateToolCallPolicy?: (
     basePolicy: ToolPolicy,
     parsedArgs: Record<string, unknown>,

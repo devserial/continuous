@@ -2,6 +2,11 @@ import fs from "fs";
 
 import type { ChatHistoryItem, LoopState } from "core/index.js";
 import {
+  itemBudgetStatus,
+  overBudgetReport,
+  type ItemBudgetBreach,
+} from "core/util/itemBudget.js";
+import {
   decideNext,
   endReplan,
   enterWait,
@@ -97,6 +102,41 @@ function presentedSince(index: number): boolean {
     );
 }
 
+/** The item's own budget the running item has gone over (not reported yet), if any. */
+function overBudgetOf(loop: LoopState): ItemBudgetBreach | undefined {
+  const current = loop.current;
+  if (!current || current.kind !== "item" || current.report) return undefined;
+  const item = getSessionTaskPlan()?.items.find((t) => t.id === current.itemId);
+  if (!item?.budget) return undefined;
+  // The CLI's turn is one chat turn: its requests are not counted here, so
+  // turns are not enforced, tokens and time are
+  const status = itemBudgetStatus(loop, item, {
+    sessionTokens: sessionTokens(),
+    now: new Date(),
+    turns: 0,
+  });
+  return status.state === "over"
+    ? { which: status.which, used: status.used, limit: status.limit }
+    : undefined;
+}
+
+/**
+ * A run that ended over its item's own budget, with no report, is not nudged
+ * to report: it ends as over budget, its work kept (core's finishItemRun).
+ */
+function markOverBudget(loop: LoopState): LoopState {
+  const breach = overBudgetOf(loop);
+  if (!breach || !loop.current) return loop;
+  return {
+    ...loop,
+    current: {
+      ...loop.current,
+      overBudget: breach,
+      report: overBudgetReport(breach),
+    },
+  };
+}
+
 function planTitle(): string | undefined {
   const file = planFilePath();
   if (!file) return undefined;
@@ -146,7 +186,11 @@ function finishRun(
     )?.check;
     const itemId = loop.current.itemId;
     const settled = settleSteeredAnswers(
-      finishItemRun(loop, loop.current.report, { check }),
+      finishItemRun(loop, loop.current.report, {
+        check,
+        sessionTokens: sessionTokens(),
+        now: new Date(),
+      }),
       delivered,
     );
     // Waiting with no question open would wait forever
@@ -202,7 +246,7 @@ export function nextLoopTurn(
 
     // 1. Finish what ran.
     if (loop.current) {
-      const finished = finishRun(loop);
+      const finished = finishRun(markOverBudget(loop));
       if (finished === "awaiting") return undefined;
       if (finished === "accepted") continue;
       // The run is not over: it is being told to call its finishing tool
@@ -255,6 +299,7 @@ export function nextLoopTurn(
         // prepareLoopTurn makes the switch before the turn is sent.
         loop = startItemRun(prepared.loop, action.itemId, historyLength, now, {
           model: loopItemModelRecord(item.model),
+          sessionTokens: sessionTokens(),
         });
         enterItemMode();
         commitLoop(loop);

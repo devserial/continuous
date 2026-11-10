@@ -31,6 +31,8 @@ export const taskListImpl: ClientToolImpl = async (
     reset: planning && (args?.reset === true || args?.reset === "true"),
     keepOpen: !planning,
     updatedBy: "model",
+    // The item being run cannot replace the check that will decide it.
+    lockChecks: extras.getState().session.loop?.current?.kind === "item",
   });
   if (!result.ok) {
     throw new ContinueError(ContinueErrorReason.Unspecified, result.error);

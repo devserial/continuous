@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import { commandCandidates } from "./candidates";
+import { commandCandidateSet } from "./candidates";
 import { ProtectedHit, ProtectedKind, protectedPathHit } from "./protected";
 import { isNetworkPath, secretWordLabel } from "./secretCommands";
 
@@ -7,16 +7,14 @@ const strip = (s: string) =>
   s.replace(/^[<>&|]+/, "").replace(/^['"]+|['"]+$/g, "");
 
 /** Words of a command, per candidate, so a command name knows whether it has arguments. */
-function candidateWords(command: string): string[][] {
-  return commandCandidates(command).map((c) =>
-    c.split(/\s+/).map(strip).filter(Boolean),
-  );
+function wordsOf(candidates: string[]): string[][] {
+  return candidates.map((c) => c.split(/\s+/).map(strip).filter(Boolean));
 }
 
 /** The words of a command worth testing as paths: quotes, redirects and `--opt=` stripped. */
-function pathWords(command: string): string[] {
+function pathWords(candidates: string[]): string[] {
   const words = new Set<string>();
-  for (const list of candidateWords(command)) {
+  for (const list of wordsOf(candidates)) {
     for (const w of list) {
       words.add(w);
       const eq = w.indexOf("=");
@@ -42,10 +40,19 @@ export function protectedCommandHit(
   /** Kinds the person switched off (built-in rules by id) */
   skip: readonly ProtectedKind[] = [],
 ): ProtectedHit | undefined {
+  const { list, truncated } = commandCandidateSet(command);
+  // The cap dropped part of the command. A secret in the missing part would
+  // otherwise look safe, so the command asks.
+  if (truncated && !skip.includes("secret")) {
+    return {
+      kind: "secret",
+      path: "a command too long to check in full",
+    };
+  }
   const pathKinds = (["secret", "config"] as ProtectedKind[]).filter(
     (k) => !skip.includes(k),
   );
-  for (const word of pathWords(command)) {
+  for (const word of pathWords(list)) {
     const hit = pathKinds.length
       ? protectedPathHit(word, pathKinds, home)
       : undefined;
@@ -56,7 +63,7 @@ export function protectedCommandHit(
       return { kind: "network", path: strip(word) };
     }
   }
-  for (const words of skip.includes("secret") ? [] : candidateWords(command)) {
+  for (const words of skip.includes("secret") ? [] : wordsOf(list)) {
     for (let i = 0; i < words.length; i++) {
       const label = secretWordLabel(
         words[i],

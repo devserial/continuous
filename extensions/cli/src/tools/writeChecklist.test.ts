@@ -1,9 +1,14 @@
 import type { TaskPlan } from "core/index.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const store = vi.hoisted(() => ({ plan: undefined as TaskPlan | undefined }));
+const store = vi.hoisted(() => ({
+  plan: undefined as TaskPlan | undefined,
+  itemRunning: false,
+}));
 vi.mock("../session.js", () => ({
   getSessionTaskPlan: () => store.plan,
+  getSessionLoop: () =>
+    store.itemRunning ? { current: { kind: "item", itemId: "1" } } : undefined,
   updateSessionTaskPlan: (plan: TaskPlan | undefined) => {
     store.plan = plan;
   },
@@ -14,6 +19,7 @@ import { writeChecklistTool } from "./writeChecklist.js";
 
 beforeEach(() => {
   store.plan = undefined;
+  store.itemRunning = false;
 });
 
 describe("TaskList", () => {
@@ -95,6 +101,25 @@ describe("Checklist (alias of TaskList)", () => {
       ["1", "Write the migration", "completed"],
       ["3", "Deploy", "pending"],
     ]);
+  });
+
+  it("does not let the running item replace its check", async () => {
+    await taskListTool.run({
+      items: [
+        { text: "Add slugify", status: "in_progress", check: "npm test" },
+      ],
+    });
+    store.itemRunning = true;
+    await taskListTool.run({
+      items: [
+        { id: "1", text: "Add slugify", status: "in_progress", check: "true" },
+      ],
+    });
+    expect(store.plan?.items[0].check).toBe("npm test");
+    await writeChecklistTool.run({
+      checklist: "- [ ] Add slugify\n  check: true",
+    });
+    expect(store.plan?.items.find((i) => i.id === "1")?.check).toBe("npm test");
   });
 
   it("keeps its name and markdown parameter", () => {

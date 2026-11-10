@@ -142,6 +142,26 @@ describe("matchTerminalCommand", () => {
     const r = rules({ deny: ["runTerminalCommand"] });
     expect(matchTerminalCommand(r, "ls")?.decision).toBe("deny");
   });
+
+  it("fails closed when the candidate cap drops a later part", () => {
+    const r = rules({ deny: ["runTerminalCommand(git push*)"] });
+    const pad = Array.from({ length: 900 }, (_, i) => `f${i}`).join(" ");
+    expect(matchTerminalCommand(r, `ls ${pad}; git push`)?.decision).toBe(
+      "deny",
+    );
+    expect(matchTerminalCommand(r, "ls README")?.decision).toBeUndefined();
+    // Destination rules use the same cap: a host that was dropped still denies.
+    const host = rules({
+      deny: ["runTerminalCommand(host:*.example.test)"],
+    });
+    expect(
+      matchTerminalCommand(host, `ls ${pad}; curl https://a.example.test`)
+        ?.decision,
+    ).toBe("deny");
+    expect(
+      matchTerminalCommand(host, "curl https://example.com"),
+    ).toBeUndefined();
+  });
 });
 
 describe("matchToolCall", () => {

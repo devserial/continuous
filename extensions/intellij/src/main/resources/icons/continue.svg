@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none">
-  <!-- Monochrome activity-bar icon. VS Code recolours it from #6C707E, so no fixed colours here. -->
-  <path d="M12 12 C14.1 8 19.6 8 19.6 12 C19.6 16 14.1 16 12 12 C9.9 8 4.4 8 4.4 12 C4.4 16 9.9 16 12 12 Z" stroke="#6C707E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="16.6" cy="9.05" r="1.9" fill="#6C707E"/>
+  <!-- Monochrome activity-bar icon. VS Code recolours it from #6C707E, so no fixed colours here.
+       The two phases are weight, not colour: the left lobe (planning) is solid with a faint dot,
+       the right (building) is faint with a solid dot. -->
+  <g stroke="#6C707E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 12 C9.9 8 4.4 8 4.4 12 C4.4 16 9.9 16 12 12"/>
+    <path d="M12 12 C14.1 8 19.6 8 19.6 12 C19.6 16 14.1 16 12 12" opacity="0.5"/>
+  </g>
+  <circle cx="8.2" cy="12" r="0.9" fill="#6C707E" opacity="0.5"/>
+  <circle cx="15.8" cy="12" r="0.9" fill="#6C707E"/>
 </svg>

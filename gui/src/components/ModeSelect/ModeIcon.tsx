@@ -12,10 +12,8 @@ interface ModeIconProps {
   className?: string;
 }
 
-export function ModeIcon({
-  mode,
-  className = "xs:h-3 xs:w-3 h-3 w-3",
-}: ModeIconProps) {
+export function ModeIcon({ mode, className: given }: ModeIconProps) {
+  const className = given ?? "xs:h-3 xs:w-3 h-3 w-3";
   switch (mode) {
     case "agent":
       return <SparklesIcon className={className} />;
@@ -26,6 +24,7 @@ export function ModeIcon({
     case "background":
       return <RocketLaunchIcon className={className} />;
     case "loop":
-      return <LoopPhaseMark className={className} />;
+      // The figure eight is twice as wide as it is tall
+      return <LoopPhaseMark className={given} />;
   }
 }

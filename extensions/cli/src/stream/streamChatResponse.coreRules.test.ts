@@ -42,10 +42,19 @@ beforeEach(() => {
 
 describe("checkToolPermissionApproval with toolPermissions rules", () => {
   it("is unchanged when config.yaml has no toolPermissions", async () => {
-    // The default headless policy allows Bash; `cat .env` still runs, as before.
+    // The default headless policy still allows an ordinary command.
     expect(
-      await checkToolPermissionApproval(allowAll, bash("cat .env"), {}, true),
+      await checkToolPermissionApproval(allowAll, bash("ls"), {}, true),
     ).toEqual({ approved: true });
+    // A protected path is refused even with no user rules.
+    const secret = await checkToolPermissionApproval(
+      allowAll,
+      bash("cat .env"),
+      {},
+      true,
+    );
+    expect(secret).toMatchObject({ approved: false, denialReason: "policy" });
+    expect(secret.denialMessage).toMatch(/headless/i);
   });
 
   it("a deny rule refuses and the message names the rule", async () => {

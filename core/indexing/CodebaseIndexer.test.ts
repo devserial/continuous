@@ -121,6 +121,9 @@ describe("CodebaseIndexer", () => {
   });
 
   afterAll(async () => {
+    // Init starts a refresh and does not wait for it. Settle that before
+    // deleting the workspace, or its error is logged after the file ends.
+    await codebaseIndexer.refreshPromise;
     tearDownTestDir();
   });
 
@@ -714,7 +717,8 @@ describe("CodebaseIndexer", () => {
           .mockResolvedValue(mockIdeSettings);
       });
 
-      afterEach(() => {
+      afterEach(async () => {
+        await indexer.refreshPromise;
         jest.clearAllMocks();
       });
 

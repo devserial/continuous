@@ -35,6 +35,33 @@ let levels: PolicyLevels = { ...DEFAULT_POLICY_LEVELS };
 /** The rest of the settings file: switches, floor, plan limit, question lists. */
 let extras: Omit<PolicyFileSettings, "levels"> = {};
 
+/** `--allow`, `--ask` and `--exclude` for this process, so a loop worker can use them. */
+let commandFlags: { allow?: string[]; ask?: string[]; exclude?: string[] } = {};
+
+export function setCommandPermissionFlags(flags: {
+  allow?: string[];
+  ask?: string[];
+  exclude?: string[];
+}): void {
+  commandFlags = {
+    ...(flags.allow?.length ? { allow: [...flags.allow] } : {}),
+    ...(flags.ask?.length ? { ask: [...flags.ask] } : {}),
+    ...(flags.exclude?.length ? { exclude: [...flags.exclude] } : {}),
+  };
+}
+
+export function getCommandPermissionFlags(): {
+  allow?: string[];
+  ask?: string[];
+  exclude?: string[];
+} {
+  return {
+    ...(commandFlags.allow ? { allow: [...commandFlags.allow] } : {}),
+    ...(commandFlags.ask ? { ask: [...commandFlags.ask] } : {}),
+    ...(commandFlags.exclude ? { exclude: [...commandFlags.exclude] } : {}),
+  };
+}
+
 export function getPolicyExtras(): Omit<PolicyFileSettings, "levels"> {
   return extras;
 }
@@ -71,6 +98,7 @@ export function setPolicyLevels(next: PolicyLevels): void {
 export function resetPolicyLevels(): void {
   levels = { ...DEFAULT_POLICY_LEVELS };
   extras = {};
+  commandFlags = {};
 }
 
 /** What core's engine is given besides the levels. */

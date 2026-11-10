@@ -36,6 +36,35 @@ describe("buildTaskPlan", () => {
     expect(p.updatedBy).toBe("model");
   });
 
+  it("keeps an existing check while a loop item is running", () => {
+    const previous = plan([
+      {
+        text: "Add slugify",
+        status: "in_progress",
+        check: "npm test -- slugify",
+      },
+    ]);
+    const dropped = buildTaskPlan(
+      [{ id: "1", text: "Add slugify", status: "in_progress" }],
+      { previous, now, lockChecks: true },
+    );
+    expect(dropped.ok && dropped.plan.items[0].check).toBe(
+      "npm test -- slugify",
+    );
+    const replaced = buildTaskPlan(
+      [{ id: "1", text: "Add slugify", status: "in_progress", check: "true" }],
+      { previous, now, lockChecks: true },
+    );
+    expect(replaced.ok && replaced.plan.items[0].check).toBe(
+      "npm test -- slugify",
+    );
+    const open = buildTaskPlan(
+      [{ id: "1", text: "Add slugify", status: "in_progress", check: "true" }],
+      { previous, now },
+    );
+    expect(open.ok && open.plan.items[0].check).toBe("true");
+  });
+
   it("allows at most one item in progress", () => {
     const result = buildTaskPlan([
       { text: "a", status: "in_progress" },

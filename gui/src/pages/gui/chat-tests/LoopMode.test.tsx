@@ -289,10 +289,21 @@ describe("Loop mode", () => {
       document.querySelector("[data-testid=loop-questions-pointer]"),
     ).not.toBeNull();
 
+    // Selecting a choice only marks it: nothing is sent until Answer
     await act(async () =>
       fireEvent.click(
         panel.querySelectorAll("[data-testid=loop-choice-option]")[1],
       ),
+    );
+    expect(
+      panel
+        .querySelectorAll("[data-testid=loop-choice-option]")[1]
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(h.loop().questions[0].answerId).toBeUndefined();
+    expect(h.loop().status).toBe("waiting");
+    await act(async () =>
+      fireEvent.click(panel.querySelector("[data-testid=loop-choice-apply]")!),
     );
     await waitFor(() => expect(h.loop().status).toBe("stopped"));
     expect(h.prompt(2)).toContain(": PEG");
@@ -330,7 +341,7 @@ describe("Loop mode", () => {
     );
     await act(async () =>
       fireEvent.click(
-        document.querySelector("[data-testid=loop-choice-other-send]")!,
+        document.querySelector("[data-testid=loop-choice-apply]")!,
       ),
     );
     await waitFor(() => expect(h.loop().status).toBe("stopped"));
@@ -381,6 +392,11 @@ describe("Loop mode", () => {
     await act(async () =>
       fireEvent.click(
         panel.querySelectorAll("[data-testid=plan-decision-option]")[1],
+      ),
+    );
+    await act(async () =>
+      fireEvent.click(
+        panel.querySelector("[data-testid=plan-decision-apply]")!,
       ),
     );
     await waitFor(() =>
@@ -1074,6 +1090,12 @@ describe("Loop mode", () => {
     const el = (id: string) =>
       document.querySelector(`[data-testid=${id}]`) as HTMLElement;
 
+    // The limits stay out of sight until asked for, and no usage is shown yet
+    expect(el("loop-limit-rounds")).toBeNull();
+    expect(el("loop-usage")).toBeNull();
+    await act(async () => fireEvent.click(el("loop-budget-toggle")));
+    expect(el("loop-limit-rounds")).not.toBeNull();
+
     // The limits: core refuses what is out of bounds, and nothing changes
     await act(async () => {
       fireEvent.change(el("loop-limit-rounds"), { target: { value: "2" } });
@@ -1098,6 +1120,14 @@ describe("Loop mode", () => {
         maxWallMs: 30 * 60_000,
       }),
     );
+    // Applied: the fields go away and what is left shows, with a run count
+    // per task
+    await waitFor(() => expect(el("loop-limit-rounds")).toBeNull());
+    expect(el("loop-usage-rounds").textContent).toContain("Round 1 of 2");
+    expect(el("loop-usage-tokens").textContent).toContain("used");
+    expect(el("loop-usage-time").textContent).toContain("left of 30m");
+    expect(el("loop-usage-totals").textContent).toContain("done");
+    expect(el("loop-runs-1").textContent).toMatch(/\d+ runs?/);
     expect(el("loop-controls-error")).toBeNull();
     await act(async () => {
       fireEvent.change(el("loop-replan"), { target: { value: "never" } });

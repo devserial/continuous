@@ -1,3 +1,13 @@
+import { editTool } from "../tools/edit.js";
+import { fetchTool } from "../tools/fetch.js";
+import { listFilesTool } from "../tools/listFiles.js";
+import { multiEditTool } from "../tools/multiEdit.js";
+import { readFileTool } from "../tools/readFile.js";
+import { runTerminalCommandTool } from "../tools/runTerminalCommand.js";
+import { searchCodeTool } from "../tools/searchCode.js";
+import { viewDiffTool } from "../tools/viewDiff.js";
+import { writeFileTool } from "../tools/writeFile.js";
+
 import {
   parseToolPattern,
   yamlConfigToPolicies,
@@ -106,7 +116,7 @@ describe("permissionsYamlLoader", () => {
         tool: "Write",
         permission: "exclude",
         argumentMatches: {
-          file_path: "**/*.ts",
+          filepath: "**/*.ts",
         },
       });
     });
@@ -130,7 +140,7 @@ describe("permissionsYamlLoader", () => {
           expected: {
             tool: "Read",
             permission: "allow",
-            argumentMatches: { file_path: "src/**/*.js" },
+            argumentMatches: { filepath: "src/**/*.js" },
           },
         },
         {
@@ -138,7 +148,7 @@ describe("permissionsYamlLoader", () => {
           expected: {
             tool: "List",
             permission: "allow",
-            argumentMatches: { path: "/home/user" },
+            argumentMatches: { dirpath: "/home/user" },
           },
         },
         {
@@ -146,7 +156,23 @@ describe("permissionsYamlLoader", () => {
           expected: {
             tool: "Search",
             permission: "allow",
-            argumentMatches: { query: "TODO" },
+            argumentMatches: { pattern: "TODO" },
+          },
+        },
+        {
+          pattern: "MultiEdit(src/**)",
+          expected: {
+            tool: "MultiEdit",
+            permission: "allow",
+            argumentMatches: { file_path: "src/**" },
+          },
+        },
+        {
+          pattern: "Diff(.)",
+          expected: {
+            tool: "Diff",
+            permission: "allow",
+            argumentMatches: { path: "." },
           },
         },
         {
@@ -202,6 +228,25 @@ describe("permissionsYamlLoader", () => {
       expect(() => parseToolPattern("Write(unclosed", "allow")).toThrow(
         "Invalid tool pattern: Write(unclosed",
       );
+    });
+
+    it("checks the argument the tool actually takes", () => {
+      const tools = {
+        Write: writeFileTool,
+        Edit: editTool,
+        MultiEdit: multiEditTool,
+        Read: readFileTool,
+        List: listFilesTool,
+        Search: searchCodeTool,
+        Bash: runTerminalCommandTool,
+        Fetch: fetchTool,
+        Diff: viewDiffTool,
+      };
+      for (const [name, tool] of Object.entries(tools)) {
+        const policy = parseToolPattern(`${name}(**/.env)`, "exclude");
+        const key = Object.keys(policy.argumentMatches ?? {})[0];
+        expect(tool.parameters.properties, name).toHaveProperty(key);
+      }
     });
 
     it("should use exact tool names in patterns", () => {

@@ -111,7 +111,12 @@ export class MCPService
     const connectedServers = connections.filter(
       (c) => c.status === "connected",
     );
-    const tools = connectedServers.flatMap((s) => s.tools);
+    const tools = connectedServers.flatMap((s) =>
+      s.tools.map((tool) => ({
+        ...tool,
+        serverName: s.config?.name,
+      })),
+    );
     const prompts = connectedServers.flatMap((s) => s.prompts);
 
     const newState: MCPServiceState = {

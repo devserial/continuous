@@ -9,7 +9,11 @@ import {
 } from "core/util/taskPlan.js";
 
 import { services } from "../services/index.js";
-import { getSessionTaskPlan, updateSessionTaskPlan } from "../session.js";
+import {
+  getSessionLoop,
+  getSessionTaskPlan,
+  updateSessionTaskPlan,
+} from "../session.js";
 
 import type { Tool } from "./types.js";
 
@@ -41,6 +45,8 @@ export function planFromToolArgs(args: {
     reset: planning && (args.reset === true || args.reset === "true"),
     keepOpen: !planning,
     updatedBy: "model",
+    // The item being run cannot replace the check that will decide it.
+    lockChecks: getSessionLoop()?.current?.kind === "item",
   });
   if (!result.ok) {
     throw new Error(result.error);

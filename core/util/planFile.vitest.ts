@@ -5,6 +5,7 @@ import {
   choosePlanFileName,
   describeDecisions,
   isExistenceOnlyCheck,
+  planCheckSummary,
   parsePlanFile,
   planBuildMessage,
   planKeepPlanningResult,
@@ -494,6 +495,12 @@ describe("check lint", () => {
       "Test-Path src/a.js",
       "[ -f src/a.js ]",
       "cat README.md | grep Usage",
+      ":",
+      "node -e 0",
+      'python -c "pass"',
+      "python3 -c pass",
+      'sh -c "test -f x"',
+      "bash -lc 'test -f src/a.js && grep -q slugify src/a.js'",
     ]) {
       expect(isExistenceOnlyCheck(weak), weak).toBe(true);
     }
@@ -520,6 +527,15 @@ describe("check lint", () => {
     expect(notes).toContain("The check for to-do 4, `grep -q Usage README.md`");
     expect(notes).not.toContain("to-do 2");
     expect(weakCheckNotes([{ check: "npm test" }, {}])).toBe("");
+    const summary = planCheckSummary([
+      { check: "npm test" },
+      { check: "test -f a.js" },
+    ]);
+    expect(summary).toContain("Checks the loop will run:");
+    expect(summary).toContain("1. npm test");
+    expect(summary).toContain("2. test -f a.js");
+    expect(summary).toContain("to-do 2");
+    expect(planCheckSummary([{}])).toBe("");
     expect(
       planProposedResult("plans/p.md", {
         items: [
